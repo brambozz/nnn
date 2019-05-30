@@ -43,11 +43,14 @@ enum action {
 	SEL_PREV,
 	SEL_PGDN,
 	SEL_PGUP,
+	SEL_CTRL_D,
+	SEL_CTRL_U,
 	SEL_HOME,
 	SEL_END,
 	SEL_CDHOME,
 	SEL_CDBEGIN,
 	SEL_CDLAST,
+	SEL_CDROOT,
 	SEL_VISIT,
 	SEL_LEADER,
 	SEL_CYCLE,
@@ -84,10 +87,12 @@ enum action {
 	SEL_NEW,
 	SEL_RENAME,
 	SEL_RENAMEALL,
+	SEL_SSHFS,
+	SEL_UMOUNT,
 	SEL_HELP,
 	SEL_EXEC,
 	SEL_SHELL,
-	SEL_SCRIPT,
+	SEL_PLUGIN,
 	SEL_LAUNCH,
 	SEL_RUNCMD,
 	SEL_RUNEDIT,
@@ -97,6 +102,7 @@ enum action {
 	SEL_QUITCTX,
 	SEL_QUITCD,
 	SEL_QUIT,
+	SEL_CLICK,
 };
 
 /* Associate a pressed key to an action */
@@ -123,10 +129,12 @@ static struct key bindings[] = {
 	{ KEY_UP,         SEL_PREV },
 	/* Page down */
 	{ KEY_NPAGE,      SEL_PGDN },
-	{ CONTROL('N'),   SEL_PGDN },
 	/* Page up */
 	{ KEY_PPAGE,      SEL_PGUP },
-	{ CONTROL('E'),   SEL_PGUP },
+	/* Ctrl+D */
+	{ CONTROL('N'),   SEL_CTRL_D },
+	/* Ctrl+U */
+	{ CONTROL('E'),   SEL_CTRL_U },
 	/* First entry */
 	{ KEY_HOME,       SEL_HOME },
 	{ 'g',            SEL_HOME },
@@ -141,6 +149,8 @@ static struct key bindings[] = {
 	{ '@',            SEL_CDBEGIN },
 	/* Last visited dir */
 	{ '-',            SEL_CDLAST },
+	/* Go to / */
+	{ '`',            SEL_CDROOT },
 	/* Visit marked directory */
 	{ CONTROL('B'),   SEL_VISIT },
 	/* Leader key */
@@ -185,7 +195,7 @@ static struct key bindings[] = {
 	{ CONTROL('J'),   SEL_BSIZE },
 	/* Toggle sort by time */
 	{ 't',            SEL_MTIME },
-	/* Wild mode */
+	/* Wild load */
 	{ CONTROL('W'),   SEL_WILD },
 	/* Redraw window */
 	{ CONTROL('L'),   SEL_REDRAW },
@@ -215,6 +225,10 @@ static struct key bindings[] = {
 	{ CONTROL('R'),   SEL_RENAME },
 	/* Rename contents of current dir */
 	{ 'r',            SEL_RENAMEALL },
+	/* Connect to server over SSHFS */
+	{ 'c',            SEL_SSHFS },
+	/* Disconnect a SSHFS mount point */
+	{ 'u',            SEL_UMOUNT },
 	/* Show help */
 	{ '?',            SEL_HELP },
 	/* Execute file */
@@ -222,9 +236,9 @@ static struct key bindings[] = {
 	/* Run command */
 	{ '!',            SEL_SHELL },
 	{ CONTROL(']'),   SEL_SHELL },
-	/* Run a custom script */
-	{ 'R',            SEL_SCRIPT },
-	{ CONTROL('V'),   SEL_SCRIPT },
+	/* Run a plugin */
+	{ 'R',            SEL_PLUGIN },
+	{ CONTROL('V'),   SEL_PLUGIN },
 	/* Launcher */
 	{ '=',            SEL_LAUNCH },
 	/* Run a command */
@@ -243,4 +257,5 @@ static struct key bindings[] = {
 	/* Quit */
 	{ 'Q',            SEL_QUIT },
 	{ CONTROL('Q'),   SEL_QUIT },
+	{ KEY_MOUSE,      SEL_CLICK },
 };

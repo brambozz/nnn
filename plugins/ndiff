@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+# Description: Show diff of 2 directories or multiple files in vimdiff
+#
+# Shell: Bash
+# Author: Arun Prakash Jana
+
+arr=($(cat ~/.config/nnn/.selection | tr '\0' '\n'))
+
+if [ -d "${arr[0]}" ] && [ -d "${arr[1]}" ]; then
+    vimdiff <(cd ${arr[0]} && find | sort) <(cd ${arr[1]} && find | sort)
+else
+    vimdiff "${arr[@]}"
+fi

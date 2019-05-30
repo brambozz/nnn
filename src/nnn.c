@@ -1,4 +1,5 @@
 /*
+
  * BSD 2-Clause License
  *
  * Copyright (C) 2014-2016, Lazaros Koromilas <lostd@2f30.org>
@@ -98,7 +99,7 @@
 #include "dbg.h"
 
 /* Macro definitions */
-#define VERSION "2.4"
+#define VERSION "2.5"
 #define GENERAL_INFO "BSD 2-Clause\nhttps://github.com/jarun/nnn"
 
 #ifndef S_BLKSIZE
@@ -108,6 +109,8 @@
 #define LEN(x) (sizeof(x) / sizeof(*(x)))
 #undef MIN
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
+#undef MAX
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define ISODD(x) ((x) & 1)
 #define ISBLANK(x) ((x) == ' ' || (x) == '\t')
 #define TOUPPER(ch) \
@@ -125,11 +128,13 @@
 #define DESCRIPTOR_LEN 32
 #define _ALIGNMENT 0x10 /* 16-byte alignment */
 #define _ALIGNMENT_MASK 0xF
-#define HOME_LEN_MAX 64
+#define TMP_LEN_MAX 64
 #define CTX_MAX 4
 #define DOT_FILTER_LEN 7
 #define ASCII_MAX 128
 #define EXEC_ARGS_MAX 8
+#define SCROLLOFF 5
+#define LONG_SIZE sizeof(ulong)
 
 /* Entry flags */
 #define DIR_OR_LINK_TO_DIR 0x1
@@ -153,7 +158,7 @@
 /* Version compare macros */
 /*
  * states: S_N: normal, S_I: comparing integral part, S_F: comparing
- *         fractionnal parts, S_Z: idem but with leading Zeroes only
+ *         fractional parts, S_Z: idem but with leading Zeroes only
  */
 #define  S_N    0x0
 #define  S_I    0x3
@@ -193,7 +198,10 @@ typedef struct {
 	char *loc;
 } bm;
 
-/* Settings */
+/*
+ * Settings
+ * NOTE: update default values if changing order
+ */
 typedef struct {
 	uint filtermode : 1;  /* Set to enter filter mode */
 	uint mtimeorder : 1;  /* Set to sort by time modified */
@@ -202,20 +210,20 @@ typedef struct {
 	uint blkorder   : 1;  /* Set to sort by blocks used (disk usage) */
 	uint showhidden : 1;  /* Set to show hidden files */
 	uint copymode   : 1;  /* Set when copying files */
-	uint autoselect : 1;  /* Auto-select dir in nav-as-you-type mode */
 	uint showdetail : 1;  /* Clear to show fewer file info */
-	uint dircolor   : 1;  /* Current status of dir color */
-	uint metaviewer : 1;  /* Index of metadata viewer in utils[] */
 	uint ctxactive  : 1;  /* Context active or not */
 	uint reserved   : 7;
 	/* The following settings are global */
 	uint curctx     : 2;  /* Current context number */
+	uint dircolor   : 1;  /* Current status of dir color */
 	uint picker     : 1;  /* Write selection to user-specified file */
 	uint pickraw    : 1;  /* Write selection to sdtout before exit */
 	uint nonavopen  : 1;  /* Open file on right arrow or `l` */
+	uint autoselect : 1;  /* Auto-select dir in nav-as-you-type mode */
+	uint metaviewer : 1;  /* Index of metadata viewer in utils[] */
 	uint useeditor  : 1;  /* Use VISUAL to open text files */
-	uint runscript  : 1;  /* Choose script to run mode */
-	uint runctx     : 2;  /* The context in which script is to be run */
+	uint runplugin  : 1;  /* Choose plugin mode */
+	uint runctx     : 2;  /* The context in which plugin is to be run */
 	uint restrict0b : 1;  /* Restrict 0-byte file opening */
 	uint filter_re  : 1;  /* Use regex filters */
 	uint wild       : 1;  /* Do not sort entries on dir load */
@@ -227,6 +235,7 @@ typedef struct {
 	char c_path[PATH_MAX]; /* Current dir */
 	char c_last[PATH_MAX]; /* Last visited dir */
 	char c_name[NAME_MAX + 1]; /* Current file name */
+	char c_fltr[REGEX_MAX]; /* Current filter */
 	settings c_cfg; /* Current configuration */
 	uint color; /* Color code for directories */
 } context;
@@ -234,12 +243,38 @@ typedef struct {
 /* GLOBALS */
 
 /* Configuration, contexts */
-static settings cfg = {0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0};
+static settings cfg = {
+	0, /* filtermode */
+	0, /* mtimeorder */
+	0, /* sizeorder */
+	0, /* apparentsz */
+	0, /* blkorder */
+	0, /* showhidden */
+	0, /* copymode */
+	1, /* showdetail */
+	1, /* ctxactive */
+	0, /* reserved */
+	0, /* curctx */
+	0, /* dircolor */
+	0, /* picker */
+	0, /* pickraw */
+	0, /* nonavopen */
+	1, /* autoselect */
+	0, /* metaviewer */
+	0, /* useeditor */
+	0, /* runplugin */
+	0, /* runctx */
+	0, /* restrict0b */
+	1, /* filter_re */
+	0, /* wild */
+	0, /* trash */
+};
+
 static context g_ctx[CTX_MAX] __attribute__ ((aligned));
 
 static struct entry *dents;
 static char *pnamebuf, *pcopybuf;
-static int ndents, cur, total_dents = ENTRY_INCR;
+static int ndents, cur, curscroll, total_dents = ENTRY_INCR;
 static int xlines, xcols;
 static uint idle;
 static uint idletimeout, copybufpos, copybuflen;
@@ -249,11 +284,15 @@ static char *editor;
 static char *pager;
 static char *shell;
 static char *home;
+static char *initpath;
+static char *cfgdir;
+static char *g_cppath;
+static char *plugindir;
 static blkcnt_t ent_blocks;
 static blkcnt_t dir_blocks;
 static ulong num_files;
 static bm bookmark[BM_MAX];
-static size_t g_tmpfplen; /* path to tmp files for copy without X, keybind help and file stats */
+static size_t g_tmpfplen;
 static uchar g_crc;
 static uchar BLK_SHIFT = 9;
 static bool interrupted = FALSE;
@@ -270,11 +309,8 @@ static sig_t oldsigtstp;
 /* For use in functions which are isolated and don't return the buffer */
 static char g_buf[CMD_LEN_MAX] __attribute__ ((aligned));
 
-/* Buffer for file path copy file */
-static char g_cppath[PATH_MAX] __attribute__ ((aligned));
-
-/* Buffer to store tmp file path */
-static char g_tmpfpath[HOME_LEN_MAX] __attribute__ ((aligned));
+/* Buffer to store tmp file path to show selection, file stats and help */
+static char g_tmpfpath[TMP_LEN_MAX] __attribute__ ((aligned));
 
 /* Replace-str for xargs on different platforms */
 #if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
@@ -287,9 +323,9 @@ static char g_tmpfpath[HOME_LEN_MAX] __attribute__ ((aligned));
 
 /* Options to identify file mime */
 #ifdef __APPLE__
-#define FILE_OPTS "-bI"
+#define FILE_OPTS "-bIL"
 #else
-#define FILE_OPTS "-bi"
+#define FILE_OPTS "-biL"
 #endif
 
 /* Macros for utilities */
@@ -297,11 +333,10 @@ static char g_tmpfpath[HOME_LEN_MAX] __attribute__ ((aligned));
 #define EXIFTOOL 1
 #define OPENER 2
 #define ATOOL 3
-#define APACK 4
-#define VIDIR 5
-#define LOCKER 6
-#define NLAUNCH 7
-#define UNKNOWN 8
+#define BSDTAR 4
+#define LOCKER 5
+#define NLAUNCH 6
+#define UNKNOWN 7
 
 /* Utilities to open files, run actions */
 static char * const utils[] = {
@@ -315,8 +350,7 @@ static char * const utils[] = {
 	"xdg-open",
 #endif
 	"atool",
-	"apack",
-	"vidir",
+	"bsdtar",
 #ifdef __APPLE__
 	"bashlock",
 #elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
@@ -334,37 +368,38 @@ static char mv[] = "mvg -gi";
 #endif
 
 /* Common strings */
-#define STR_NOHOME_ID 0
-#define STR_INPUT_ID 1
-#define STR_INVBM_KEY 2
-#define STR_DATE_ID 3
-#define STR_TMPFILE 4
+#define STR_INPUT_ID 0
+#define STR_INVBM_KEY 1
+#define STR_DATE_ID 2
+#define STR_TMPFILE 3
+#define NONE_SELECTED 4
+#define UTIL_MISSING 5
 
 static const char * const messages[] = {
-	"HOME not set",
 	"no traversal",
 	"invalid key",
 	"%F %T %z",
 	"/.nnnXXXXXX",
+	"empty selection",
+	"utility missing",
 };
 
-/* Supported config env vars */
+/* Supported configuration environment variables */
 #define NNN_BMS 0
 #define NNN_OPENER 1
 #define NNN_CONTEXT_COLORS 2
 #define NNN_IDLE_TIMEOUT 3
 #define NNN_COPIER 4
-#define NNN_SCRIPT 5
-#define NNN_NOTE 6
-#define NNN_TMPFILE 7
-#define NNNLVL 8 /* strings end here */
-#define NNN_USE_EDITOR 9 /* flags begin here */
-#define NNN_NO_AUTOSELECT 10
-#define NNN_RESTRICT_NAV_OPEN 11
-#define NNN_RESTRICT_0B 12
-#define NNN_TRASH 13
+#define NNN_NOTE 5
+#define NNN_TMPFILE 6
+#define NNNLVL 7 /* strings end here */
+#define NNN_USE_EDITOR 8 /* flags begin here */
+#define NNN_NO_AUTOSELECT 9
+#define NNN_RESTRICT_NAV_OPEN 10
+#define NNN_RESTRICT_0B 11
+#define NNN_TRASH 12
 #ifdef __linux__
-#define NNN_OPS_PROG 14
+#define NNN_OPS_PROG 13
 #endif
 
 static const char * const env_cfg[] = {
@@ -373,7 +408,6 @@ static const char * const env_cfg[] = {
 	"NNN_CONTEXT_COLORS",
 	"NNN_IDLE_TIMEOUT",
 	"NNN_COPIER",
-	"NNN_SCRIPT",
 	"NNN_NOTE",
 	"NNN_TMPFILE",
 	"NNNLVL",
@@ -387,7 +421,7 @@ static const char * const env_cfg[] = {
 #endif
 };
 
-/* Required env vars */
+/* Required environment variables */
 #define SHELL 0
 #define VISUAL 1
 #define EDITOR 2
@@ -402,10 +436,11 @@ static const char * const envs[] = {
 
 /* Event handling */
 #ifdef LINUX_INOTIFY
+#define NUM_EVENT_SLOTS 16 /* Make room for 16 events */
 #define EVENT_SIZE (sizeof(struct inotify_event))
-#define EVENT_BUF_LEN (1024 * (EVENT_SIZE + 16))
+#define EVENT_BUF_LEN (EVENT_SIZE * NUM_EVENT_SLOTS)
 static int inotify_fd, inotify_wd = -1;
-static uint INOTIFY_MASK = IN_ATTRIB | IN_CREATE | IN_DELETE | IN_DELETE_SELF
+static uint INOTIFY_MASK = /* IN_ATTRIB | */ IN_CREATE | IN_DELETE | IN_DELETE_SELF
 			   | IN_MODIFY | IN_MOVE_SELF | IN_MOVED_FROM | IN_MOVED_TO;
 #elif defined(BSD_KQUEUE)
 #define NUM_EVENT_SLOTS 1
@@ -420,7 +455,7 @@ static struct timespec gtimeout;
 /* Function macros */
 #define exitcurses() endwin()
 #define clearprompt() printmsg("")
-#define printwarn() printmsg(strerror(errno))
+#define printwarn(presel) printwait(strerror(errno), presel)
 #define istopdir(path) ((path)[1] == '\0' && (path)[0] == '/')
 #define copycurname() xstrlcpy(lastname, dents[cur].name, NAME_MAX + 1)
 #define settimeout() timeout(1000)
@@ -435,8 +470,10 @@ static struct timespec gtimeout;
 
 /* Forward declarations */
 static void redraw(char *path);
-static void spawn(char *file, char *arg1, char *arg2, const char *dir, uchar flag);
+static int spawn(char *file, char *arg1, char *arg2, const char *dir, uchar flag);
 static int (*nftw_fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf);
+static int dentfind(const char *fname, int n);
+static void move_cursor(int target, int ignore_scrolloff);
 
 /* Functions */
 
@@ -446,8 +483,8 @@ static int (*nftw_fn)(const char *fpath, const struct stat *sb, int typeflag, st
  */
 static uchar crc8fast(const uchar * const message, size_t n)
 {
-	uchar data, remainder;
-	size_t byte;
+	uchar data, remainder = 0;
+	size_t byte = 0;
 
 	/* CRC data */
 	static const uchar crc8table[CRC8_TABLE_LEN] __attribute__ ((aligned)) = {
@@ -470,9 +507,10 @@ static uchar crc8fast(const uchar * const message, size_t n)
 	};
 
 	/* Divide the message by the polynomial, a byte at a time */
-	for (remainder = byte = 0; byte < n; ++byte) {
+	while (byte < n) {
 		data = message[byte] ^ (remainder >> (WIDTH - 8));
 		remainder = crc8table[data] ^ (remainder << 8);
+		++byte;
 	}
 
 	/* The final remainder is the CRC */
@@ -501,12 +539,11 @@ static uint xatoi(const char *str)
 
 static char *xitoa(uint val)
 {
-	static const char hexbuf[] = "0123456789";
 	static char ascbuf[32] = {0};
 	int i;
 
 	for (i = 30; val && i; --i, val /= 10)
-		ascbuf[i] = hexbuf[val % 10];
+		ascbuf[i] = '0' + (val % 10);
 
 	return &ascbuf[++i];
 }
@@ -520,7 +557,8 @@ static inline void printmsg(const char *msg)
 static void printwait(const char *msg, int *presel)
 {
 	printmsg(msg);
-	*presel = MSGWAIT;
+	if (presel)
+		*presel = MSGWAIT;
 }
 
 /* Kill curses and display error before exiting */
@@ -528,7 +566,7 @@ static void printerr(int linenum)
 {
 	exitcurses();
 	perror(xitoa(linenum));
-	if (!cfg.picker && g_cppath[0])
+	if (!cfg.picker && g_cppath)
 		unlink(g_cppath);
 	free(pcopybuf);
 	exit(1);
@@ -621,10 +659,10 @@ static size_t xstrlcpy(char *dest, const char *src, size_t n)
 	if (!src || !dest || !n)
 		return 0;
 
-	static ulong *s, *d;
-	static const uint lsize = sizeof(ulong);
-	static const uint _WSHIFT = (sizeof(ulong) == 8) ? 3 : 2;
+	ulong *s, *d;
 	size_t len = strlen(src) + 1, blocks;
+	const uint _WSHIFT = (LONG_SIZE == 8) ? 3 : 2;
+
 
 	if (n > len)
 		n = len;
@@ -636,12 +674,12 @@ static size_t xstrlcpy(char *dest, const char *src, size_t n)
 	 * To enable -O3 ensure src and dest are 16-byte aligned
 	 * More info: http://www.felixcloutier.com/x86/MOVDQA.html
 	 */
-	if ((n >= lsize) && (((ulong)src & _ALIGNMENT_MASK) == 0 &&
+	if ((n >= LONG_SIZE) && (((ulong)src & _ALIGNMENT_MASK) == 0 &&
 	    ((ulong)dest & _ALIGNMENT_MASK) == 0)) {
 		s = (ulong *)src;
 		d = (ulong *)dest;
 		blocks = n >> _WSHIFT;
-		n &= lsize - 1;
+		n &= LONG_SIZE - 1;
 
 		while (blocks) {
 			*d = *s; // NOLINT
@@ -691,80 +729,23 @@ static void *xmemrchr(uchar *s, uchar ch, size_t n)
 	return NULL;
 }
 
-/*
- * The following dirname(3) implementation does not
- * modify the input. We use a copy of the original.
- *
- * Modified from the glibc (GNU LGPL) version.
- */
-static char *xdirname(const char *path)
-{
-	char * const buf = g_buf, *last_slash, *runp;
-
-	xstrlcpy(buf, path, PATH_MAX);
-
-	/* Find last '/'. */
-	last_slash = xmemrchr((uchar *)buf, '/', strlen(buf));
-
-	if (last_slash != NULL && last_slash != buf && last_slash[1] == '\0') {
-		/* Determine whether all remaining characters are slashes. */
-		for (runp = last_slash; runp != buf; --runp)
-			if (runp[-1] != '/')
-				break;
-
-		/* The '/' is the last character, we have to look further. */
-		if (runp != buf)
-			last_slash = xmemrchr((uchar *)buf, '/', runp - buf);
-	}
-
-	if (last_slash != NULL) {
-		/* Determine whether all remaining characters are slashes. */
-		for (runp = last_slash; runp != buf; --runp)
-			if (runp[-1] != '/')
-				break;
-
-		/* Terminate the buffer. */
-		if (runp == buf) {
-			/* The last slash is the first character in the string.
-			 * We have to return "/". As a special case we have to
-			 * return "//" if there are exactly two slashes at the
-			 * beginning of the string. See XBD 4.10 Path Name
-			 * Resolution for more information.
-			 */
-			if (last_slash == buf + 1)
-				++last_slash;
-			else
-				last_slash = buf + 1;
-		} else
-			last_slash = runp;
-
-		last_slash[0] = '\0';
-	} else {
-		/* This assignment is ill-designed but the XPG specs require to
-		 * return a string containing "." in any case no directory part
-		 * is found and so a static and constant string is required.
-		 */
-		buf[0] = '.';
-		buf[1] = '\0';
-	}
-
-	return buf;
-}
-
 static char *xbasename(char *path)
 {
-	char *base = xmemrchr((uchar *)path, '/', strlen(path));
+	char *base = xmemrchr((uchar *)path, '/', strlen(path)); // NOLINT
 
 	return base ? base + 1 : path;
+}
+
+static int create_tmp_file()
+{
+	xstrlcpy(g_tmpfpath + g_tmpfplen - 1, messages[STR_TMPFILE], TMP_LEN_MAX - g_tmpfplen);
+	return mkstemp(g_tmpfpath);
 }
 
 /* Writes buflen char(s) from buf to a file */
 static void writecp(const char *buf, const size_t buflen)
 {
-	if (cfg.pickraw)
-		return;
-
-	if (!g_cppath[0])
+	if (cfg.pickraw || !g_cppath)
 		return;
 
 	FILE *fp = fopen(g_cppath, "w");
@@ -773,7 +754,7 @@ static void writecp(const char *buf, const size_t buflen)
 		fwrite(buf, 1, buflen, fp);
 		fclose(fp);
 	} else
-		printwarn();
+		printwarn(NULL);
 }
 
 static void appendfpath(const char *path, const size_t len)
@@ -785,21 +766,23 @@ static void appendfpath(const char *path, const size_t len)
 			errexit();
 	}
 
-	/* Enabling the following will miss files with newlines */
-	/*
-	 * if (copybufpos)
-	 *	pcopybuf[copybufpos - 1] = '\n';
-	 */
-
 	copybufpos += xstrlcpy(pcopybuf + copybufpos, path, len);
 }
 
 /* Write selected file paths to fd, linefeed separated */
-static ssize_t selectiontofd(int fd)
+static ssize_t selectiontofd(int fd, uint *pcount)
 {
-	uint lastpos = copybufpos - 1;
+	uint lastpos, count = 0;
 	char *pbuf = pcopybuf;
 	ssize_t pos = 0, len, r;
+
+	if (pcount)
+		*pcount = 0;
+
+	if (!copybufpos)
+		return 0;
+
+	lastpos = copybufpos - 1;
 
 	while (pos <= lastpos) {
 		len = strlen(pbuf);
@@ -815,7 +798,11 @@ static ssize_t selectiontofd(int fd)
 			pbuf += len + 1;
 		}
 		++pos;
+		++count;
 	}
+
+	if (pcount)
+		*pcount = count;
 
 	return pos;
 }
@@ -828,21 +815,13 @@ static void showcplist(void)
 	if (!copybufpos)
 		return;
 
-	if (g_tmpfpath[0])
-		xstrlcpy(g_tmpfpath + g_tmpfplen - 1, messages[STR_TMPFILE],
-			 HOME_LEN_MAX - g_tmpfplen);
-	else {
-		DPRINTF_S(messages[STR_NOHOME_ID]);
-		return;
-	}
-
-	fd = mkstemp(g_tmpfpath);
+	fd = create_tmp_file();
 	if (fd == -1) {
 		DPRINTF_S("mkstemp failed!");
 		return;
 	}
 
-	pos = selectiontofd(fd);
+	pos = selectiontofd(fd, NULL);
 
 	close(fd);
 	if (pos && pos == copybufpos)
@@ -852,9 +831,9 @@ static void showcplist(void)
 
 static bool cpsafe(void)
 {
-	/* Fail if copy file path not generated */
-	if (!g_cppath[0]) {
-		printmsg("copy file not found");
+	/* Fail if selection file path not generated */
+	if (!g_cppath) {
+		printmsg("selection file not found");
 		return FALSE;
 	}
 
@@ -864,9 +843,9 @@ static bool cpsafe(void)
 		return FALSE;
 	}
 
-	/* Fail if copy file path isn't accessible */
-	if (access(g_cppath, R_OK) == -1) {
-		printmsg("check copyfile permission");
+	/* Fail if selection file path isn't accessible */
+	if (access(g_cppath, R_OK | W_OK) == -1) {
+		errno == ENOENT ? printmsg(messages[NONE_SELECTED]) : printwarn(NULL);
 		return FALSE;
 	}
 
@@ -887,7 +866,7 @@ static void resetcpind(void)
 /* Initialize curses mode */
 static bool initcurses(void)
 {
-	int i;
+	short i;
 
 	if (cfg.picker) {
 		if (!newterm(NULL, stderr, stdin)) {
@@ -897,7 +876,7 @@ static bool initcurses(void)
 	} else if (!initscr()) {
 		char *term = getenv("TERM");
 
-		if (term != NULL)
+		if (term)
 			fprintf(stderr, "error opening TERM: %s\n", term);
 		else
 			fprintf(stderr, "initscr!\n");
@@ -909,6 +888,7 @@ static bool initcurses(void)
 	nonl();
 	//intrflush(stdscr, FALSE);
 	keypad(stdscr, TRUE);
+	mousemask(BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED | BUTTON2_CLICKED, NULL);
 	curs_set(FALSE); /* Hide cursor */
 	start_color();
 	use_default_colors();
@@ -971,33 +951,41 @@ static pid_t xfork(uchar flag)
 	return p;
 }
 
-static void join(pid_t p, uchar flag)
+static int join(pid_t p, uchar flag)
 {
-	int status;
+	int status = 0xFFFF;
 
-	if (!(flag & F_NOWAIT))
+	if (!(flag & F_NOWAIT)) {
 		/* wait for the child to exit */
 		do {
 		} while (waitpid(p, &status, 0) == -1);
 
+		if (WIFEXITED(status)) {
+			status = WEXITSTATUS(status);
+			DPRINTF_D(status);
+		}
+	}
+
 	/* restore parent's signal handling */
 	signal(SIGHUP, oldsighup);
 	signal(SIGTSTP, oldsigtstp);
+
+	return status;
 }
 
 /*
  * Spawns a child process. Behaviour can be controlled using flag.
  * Limited to 2 arguments to a program, flag works on bit set.
  */
-static void spawn(char *file, char *arg1, char *arg2, const char *dir, uchar flag)
+static int spawn(char *file, char *arg1, char *arg2, const char *dir, uchar flag)
 {
 	pid_t pid;
-	int status;
+	int status, retstatus = 0xFFFF;
 	char *argv[EXEC_ARGS_MAX] = {0};
 	char *cmd = NULL;
 
-	if (!file || !file[0])
-		return;
+	if (!file || !*file)
+		return retstatus;
 
 	/* Swap args if the first arg is NULL and second isn't */
 	if (!arg1 && arg2) {
@@ -1011,7 +999,7 @@ static void spawn(char *file, char *arg1, char *arg2, const char *dir, uchar fla
 		cmd = (char *)malloc(len);
 		if (!cmd) {
 			DPRINTF_S("malloc()!");
-			return;
+			return retstatus;
 		}
 
 		xstrlcpy(cmd, file, len);
@@ -1019,7 +1007,7 @@ static void spawn(char *file, char *arg1, char *arg2, const char *dir, uchar fla
 		if (status == -1 || status > (EXEC_ARGS_MAX - 3)) { /* arg1, arg2 and last NULL */
 			free(cmd);
 			DPRINTF_S("NULL or too many args");
-			return;
+			return retstatus;
 		}
 
 		argv[status++] = arg1;
@@ -1050,16 +1038,16 @@ static void spawn(char *file, char *arg1, char *arg2, const char *dir, uchar fla
 		execvp(*argv, argv);
 		_exit(1);
 	} else {
-		join(pid, flag);
+		retstatus = join(pid, flag);
 
 		DPRINTF_D(pid);
-		if (flag & F_NORMAL) {
-			nonl();
-			noecho();
-		}
+		if (flag & F_NORMAL)
+			refresh();
 
 		free(cmd);
 	}
+
+	return retstatus;
 }
 
 /* Get program name from env var, else return fallback program */
@@ -1070,13 +1058,24 @@ static char *xgetenv(const char *name, char *fallback)
 	return value && value[0] ? value : fallback;
 }
 
+/* Checks if an env variable is set to 1 */
+static bool xgetenv_set(const char *name)
+{
+	char *value = getenv(name);
+
+	if (value && value[0] == '1' && !value[1])
+		return TRUE;
+
+	return FALSE;
+}
+
 /* Check if a dir exists, IS a dir and is readable */
 static bool xdiraccess(const char *path)
 {
 	DIR *dirp = opendir(path);
 
-	if (dirp == NULL) {
-		printwarn();
+	if (!dirp) {
+		printwarn(NULL);
 		return FALSE;
 	}
 
@@ -1135,7 +1134,82 @@ static void xrm(char *path)
 	}
 }
 
-static void archive_selection(const char *archive, const char *curpath)
+static bool batch_rename(const char *path)
+{
+	int fd1 = -1, fd2 = -1, i;
+	uint count = 0, lines = 0;
+	bool dir = FALSE, ret = FALSE;
+	const char renamecmd[] = "paste -d'\n' %s %s | xargs -d'\n' -n2 mv 2>/dev/null";
+	char foriginal[TMP_LEN_MAX] = {0};
+	char buf[sizeof(renamecmd) + (PATH_MAX << 1)];
+
+	if ((fd1 = create_tmp_file()) == -1)
+		return ret;
+
+	xstrlcpy(foriginal, g_tmpfpath, strlen(g_tmpfpath)+1);
+
+	if ((fd2 = create_tmp_file()) == -1) {
+		unlink(foriginal);
+		close(fd1);
+		return ret;
+	}
+
+	if (!copybufpos) {
+		if (!ndents)
+			return TRUE;
+
+		for (i = 0; i < ndents; ++i)
+			appendfpath(dents[i].name, NAME_MAX);
+
+		dir = TRUE;
+	}
+
+	selectiontofd(fd1, &count);
+	selectiontofd(fd2, NULL);
+	close(fd2);
+
+	if (dir)
+		copybufpos = 0;
+
+	spawn(editor, g_tmpfpath, NULL, path, F_CLI);
+
+	// Reopen file descriptor to get updated contents:
+	if ((fd2 = open(g_tmpfpath, O_RDONLY)) == -1)
+		goto finish;
+
+	while ((i = read(fd2, buf, sizeof(buf))) > 0) {
+		while (i)
+			lines += (buf[--i] == '\n');
+	}
+
+	if (i < 0)
+		goto finish;
+
+	DPRINTF_U(count);
+	DPRINTF_U(lines);
+
+	if (count != lines) {
+		DPRINTF_S("cannot delete files");
+		goto finish;
+	}
+
+	snprintf(buf, sizeof(buf), renamecmd, foriginal, g_tmpfpath);
+	spawn("sh", "-c", buf, path, F_NORMAL);
+	ret = TRUE;
+
+finish:
+	if (fd1 >= 0)
+		close(fd1);
+	unlink(foriginal);
+
+	if (fd2 >= 0)
+		close(fd2);
+	unlink(g_tmpfpath);
+
+	return ret;
+}
+
+static void archive_selection(const char *cmd, const char *archive, const char *curpath)
 {
 	snprintf(g_buf, CMD_LEN_MAX,
 #ifdef __linux__
@@ -1143,7 +1217,7 @@ static void archive_selection(const char *archive, const char *curpath)
 #else
 		 "cat %s | xargs -0 -o %s %s",
 #endif
-		 g_cppath, utils[APACK], archive);
+		 g_cppath, cmd, archive);
 	spawn("sh", "-c", g_buf, curpath, F_NORMAL);
 }
 
@@ -1184,18 +1258,13 @@ static int digit_compare(const char *a, const char *b)
  */
 static int xstricmp(const char * const s1, const char * const s2)
 {
-	const char *c1, *c2, *m1, *m2;
+	const char *c1 = s1, *c2 = s2, *m1, *m2;
 	int count1 = 0, count2 = 0, bias;
-	char sign[2];
+	char sign[2] = {'+', '+'};
 
-	sign[0] = '+';
-	sign[1] = '+';
-
-	c1 = s1;
 	while (ISBLANK(*c1))
 		++c1;
 
-	c2 = s2;
 	while (ISBLANK(*c2))
 		++c2;
 
@@ -1303,8 +1372,10 @@ static int xstrverscmp(const char * const s1, const char * const s2)
 	if (p1 == p2)
 		return 0;
 
-	c1 = *p1++;
-	c2 = *p2++;
+	c1 = TOUPPER(*p1);
+	++p1;
+	c2 = TOUPPER(*p2);
+	++p2;
 
 	/* Hint: '0' is a digit too.  */
 	state = S_N + ((c1 == '0') + (xisdigit(c1) != 0));
@@ -1314,8 +1385,10 @@ static int xstrverscmp(const char * const s1, const char * const s2)
 			return diff;
 
 		state = next_state[state];
-		c1 = *p1++;
-		c2 = *p2++;
+		c1 = TOUPPER(*p1);
+		++p1;
+		c2 = TOUPPER(*p2);
+		++p2;
 		state += (c1 == '0') + (xisdigit(c1) != 0);
 	}
 
@@ -1384,8 +1457,12 @@ static int entrycmp(const void *va, const void *vb)
 	}
 
 	/* Do the actual sorting */
-	if (cfg.mtimeorder)
-		return pb->t - pa->t;
+	if (cfg.mtimeorder) {
+		if (pb->t >= pa->t)
+			return (int)(pb->t - pa->t);
+
+		return -1;
+	}
 
 	if (cfg.sizeorder) {
 		if (pb->size > pa->size)
@@ -1411,15 +1488,16 @@ static int entrycmp(const void *va, const void *vb)
  */
 static int nextsel(int presel)
 {
-	int c;
+	int c = presel;
 	uint i;
 	const uint len = LEN(bindings);
 #ifdef LINUX_INOTIFY
-	static char inotify_buf[EVENT_BUF_LEN];
+	struct inotify_event *event;
+	static char inotify_buf[EVENT_BUF_LEN]
+		    __attribute__ ((aligned(__alignof__(struct inotify_event))));
 #elif defined(BSD_KQUEUE)
 	static struct kevent event_data[NUM_EVENT_SLOTS];
 #endif
-	c = presel;
 
 	if (c == 0 || c == MSGWAIT) {
 		c = getch();
@@ -1442,14 +1520,34 @@ static int nextsel(int presel)
 		 * Check for changes every odd second.
 		 */
 #ifdef LINUX_INOTIFY
-		if (!cfg.blkorder && inotify_wd >= 0 && idle & 1
-		    && read(inotify_fd, inotify_buf, EVENT_BUF_LEN) > 0)
+		if (!cfg.blkorder && inotify_wd >= 0 && (idle & 1)) {
+			i = read(inotify_fd, inotify_buf, EVENT_BUF_LEN);
+			if (i > 0) {
+				char *ptr;
+
+				for (ptr = inotify_buf; ptr < inotify_buf + i;
+				     ptr += sizeof(struct inotify_event) + event->len) {
+					event = (struct inotify_event *) ptr;
+					DPRINTF_D(event->wd);
+					DPRINTF_D(event->mask);
+					if (!event->wd)
+						break;
+
+					if (event->mask & INOTIFY_MASK) {
+						c = CONTROL('L');
+						DPRINTF_S("issue refresh");
+						break;
+					}
+				}
+				DPRINTF_S("inotify read done");
+			}
+		}
 #elif defined(BSD_KQUEUE)
 		if (!cfg.blkorder && event_fd >= 0 && idle & 1
 		    && kevent(kq, events_to_monitor, NUM_EVENT_SLOTS,
 			      event_data, NUM_EVENT_FDS, &gtimeout) > 0)
-#endif
 			c = CONTROL('L');
+#endif
 	} else
 		idle = 0;
 
@@ -1511,15 +1609,24 @@ static int matches(const char *fltr)
 
 static int filterentries(char *path)
 {
-	static char ln[REGEX_MAX] __attribute__ ((aligned));
-	static wchar_t wln[REGEX_MAX] __attribute__ ((aligned));
+	wchar_t *wln = (wchar_t *)alloca(sizeof(wchar_t) * REGEX_MAX);
+	char *ln = g_ctx[cfg.curctx].c_fltr;
 	wint_t ch[2] = {0};
-	int r, total = ndents, oldcur = cur, len = 1;
-	char *pln = ln + 1;
+	int r, total = ndents, oldcur = cur, len;
+	char *pln = g_ctx[cfg.curctx].c_fltr + 1;
 
-	ln[0] = wln[0] = FILTER;
-	ln[1] = wln[1] = '\0';
 	cur = 0;
+
+	if (ndents && ln[0] == FILTER && *pln) {
+		if (matches(pln) != -1)
+			redraw(path);
+
+		len = mbstowcs(wln, ln, REGEX_MAX);
+	} else {
+		ln[0] = wln[0] = FILTER;
+		ln[1] = wln[1] = '\0';
+		len = 1;
+	}
 
 	cleartimeout();
 	curs_set(TRUE);
@@ -1630,6 +1737,11 @@ static int filterentries(char *path)
 		}
 	}
 end:
+	if (*ch != '\t')
+		g_ctx[cfg.curctx].c_fltr[0] = g_ctx[cfg.curctx].c_fltr[1] = '\0';
+
+	move_cursor(cur, 0);
+
 	curs_set(FALSE);
 	settimeout();
 
@@ -1737,6 +1849,12 @@ static char *xreadline(char *prefill, char *prompt)
 						--len;
 					}
 					break;
+				case KEY_END:
+					pos = len;
+					break;
+				case KEY_HOME:
+					pos = 0;
+					break;
 				default:
 					break;
 				}
@@ -1753,6 +1871,44 @@ END:
 	wcstombs(g_buf + ((NAME_MAX + 1) << 2), buf, NAME_MAX);
 	return g_buf + ((NAME_MAX + 1) << 2);
 }
+
+#ifndef NORL
+/*
+ * Caller should check the value of presel to confirm if it needs to wait to show warning
+ */
+static char *getreadline(char *prompt, char *path, char *curpath, int *presel)
+{
+	char *input;
+
+	/* Switch to current path for readline(3) */
+	if (chdir(path) == -1) {
+		printwarn(presel);
+		return NULL;
+	}
+
+	exitcurses();
+
+	input = readline(prompt);
+
+	refresh();
+
+	if (chdir(curpath) == -1) {
+		printwarn(presel);
+		free(input);
+		return NULL;
+	}
+
+	if (input && input[0]) {
+		add_history(input);
+		xstrlcpy(g_buf, input, CMD_LEN_MAX);
+		free(input);
+		return g_buf;
+	}
+
+	free(input);
+	return NULL;
+}
+#endif
 
 /*
  * Updates out with "dir/name or "/name"
@@ -1772,7 +1928,7 @@ static size_t mkpath(char *dir, char *name, char *out)
 	else
 		len = xstrlcpy(out, dir, PATH_MAX);
 
-	out[len - 1] = '/';
+	out[len - 1] = '/'; // NOLINT
 	return (xstrlcpy(out + len, name, PATH_MAX - len) + len);
 }
 
@@ -1780,7 +1936,7 @@ static size_t mkpath(char *dir, char *name, char *out)
  * Create symbolic/hard link(s) to file(s) in selection list
  * Returns the number of links created
  */
-static int xlink(char *suffix, char *path, char *buf, int type)
+static int xlink(char *suffix, char *path, char *buf, int *presel, int type)
 {
 	int count = 0;
 	char *pbuf = pcopybuf, *fname;
@@ -1788,15 +1944,15 @@ static int xlink(char *suffix, char *path, char *buf, int type)
 	int (*link_fn)(const char *, const char *) = NULL;
 
 	/* Check if selection is empty */
-	if (!copybufpos)
-		return 0;
+	if (!copybufpos) {
+		printwait(messages[NONE_SELECTED], presel);
+		return -1;
+	}
 
 	if (type == 's') /* symbolic link */
 		link_fn = &symlink;
-	else if (type == 'h') /* hard link */
+	else /* hard link */
 		link_fn = &link;
-	else
-		return -1;
 
 	while (pos < copybufpos) {
 		len = strlen(pbuf);
@@ -1811,34 +1967,10 @@ static int xlink(char *suffix, char *path, char *buf, int type)
 		pbuf += len + 1;
 	}
 
+	if (!count)
+		printwait("none created", presel);
+
 	return count;
-}
-
-static void savecurctx(settings *curcfg, char *path, char *curname, int r /* next context num */)
-{
-	settings cfg = *curcfg;
-
-#ifdef DIR_LIMITED_COPY
-	g_crc = 0;
-#endif
-	/* Save current context */
-	xstrlcpy(g_ctx[cfg.curctx].c_name, curname, NAME_MAX + 1);
-	g_ctx[cfg.curctx].c_cfg = cfg;
-
-	if (g_ctx[r].c_cfg.ctxactive) /* Switch to saved context */
-		cfg = g_ctx[r].c_cfg;
-	else { /* Setup a new context from current context */
-		g_ctx[r].c_cfg.ctxactive = 1;
-		xstrlcpy(g_ctx[r].c_path, path, PATH_MAX);
-		g_ctx[r].c_last[0] = '\0';
-		xstrlcpy(g_ctx[r].c_name, curname, NAME_MAX + 1);
-		g_ctx[r].c_cfg = cfg;
-		g_ctx[r].c_cfg.runscript = 0;
-	}
-
-	cfg.curctx = r;
-
-	*curcfg = cfg;
 }
 
 static bool parsebmstr(void)
@@ -1895,18 +2027,18 @@ static char *get_bm_loc(char *buf, int key)
 	for (; bookmark[r].key && r < BM_MAX; ++r) {
 		if (bookmark[r].key == key) {
 			if (bookmark[r].loc[0] == '~') {
-				if (!home) {
-					DPRINTF_S(messages[STR_NOHOME_ID]);
-					return NULL;
-				}
+				ssize_t len = strlen(home);
+				ssize_t loclen = strlen(bookmark[r].loc);
 
-				ssize_t count = xstrlcpy(buf, home, PATH_MAX);
+				if (!buf)
+					buf = (char *)malloc(len + loclen);
 
-				xstrlcpy(buf + count - 1, bookmark[r].loc + 1, PATH_MAX - count - 1);
-			} else
-				xstrlcpy(buf, bookmark[r].loc, PATH_MAX);
+				xstrlcpy(buf, home, len + 1);
+				xstrlcpy(buf + len, bookmark[r].loc + 1, loclen);
+				return buf;
+			}
 
-			return buf;
+			return realpath(bookmark[r].loc, buf);
 		}
 	}
 
@@ -1939,10 +2071,10 @@ static char *unescape(const char *str, uint maxcols)
 {
 	static wchar_t wbuf[NAME_MAX + 1] __attribute__ ((aligned));
 	wchar_t *buf = wbuf;
-	size_t len, lencount = 0;
+	size_t lencount = 0;
 
 	/* Convert multi-byte to wide char */
-	len = mbstowcs(wbuf, str, NAME_MAX);
+	size_t len = mbstowcs(wbuf, str, NAME_MAX);
 
 	while (*buf && lencount <= maxcols) {
 		if (*buf <= '\x1f' || *buf == '\x7f')
@@ -1972,14 +2104,12 @@ static char *unescape(const char *str, uint maxcols)
 
 static char *coolsize(off_t size)
 {
-	static const char * const U = "BKMGTPEZY";
+	const char * const U = "BKMGTPEZY";
 	static char size_buf[12]; /* Buffer to hold human readable size */
-	static off_t rem;
-	static int i;
+	off_t rem = 0;
+	int i = 0;
 
-	rem = i = 0;
-
-	while (size > 1024) {
+	while (size >= 1024) {
 		rem = size & (0x3FF); /* 1024 - 1 = 0x3FF */
 		size >>= 10;
 		++i;
@@ -2022,19 +2152,19 @@ static char *coolsize(off_t size)
 	}
 
 	if (i > 0 && i < 6)
-		snprintf(size_buf, 12, "%lu.%0*lu%c", (ulong)size, i, (ulong)rem, U[i]);
+		snprintf(size_buf, 12, "%u.%0*u%c", (uint)size, i & 0b11, (uint)rem, U[i]);
 	else
-		snprintf(size_buf, 12, "%lu%c", (ulong)size, U[i]);
+		snprintf(size_buf, 12, "%u%c", (uint)size, U[i]);
 
 	return size_buf;
 }
 
-static char *get_file_sym(mode_t mode)
+static void printent(const struct entry *ent, int sel, uint namecols)
 {
-	static char ind[2];
-
-	ind[0] = '\0';
-	ind[1] = '\0';
+	const char *pname = unescape(ent->name, namecols);
+	const char cp = (ent->flags & FILE_COPIED) ? '+' : ' ';
+	char ind[2] = {'\0', '\0'};
+	mode_t mode = ent->mode;
 
 	switch (mode & S_IFMT) {
 	case S_IFREG:
@@ -2061,18 +2191,10 @@ static char *get_file_sym(mode_t mode)
 		break;
 	}
 
-	return ind;
-}
-
-static void printent(const struct entry *ent, int sel, uint namecols)
-{
-	const char *pname = unescape(ent->name, namecols);
-	const char cp = (ent->flags & FILE_COPIED) ? '+' : ' ';
-
 	/* Directories are always shown on top */
 	resetdircolor(ent->flags);
 
-	printw("%s%c%s%s\n", CURSYM(sel), cp, pname, get_file_sym(ent->mode));
+	printw("%s%c%s%s\n", CURSYM(sel), cp, pname, ind);
 }
 
 static void printent_long(const struct entry *ent, int sel, uint namecols)
@@ -2084,12 +2206,9 @@ static void printent_long(const struct entry *ent, int sel, uint namecols)
 	strftime(timebuf, 18, "%F %R", localtime(&ent->t));
 
 	/* Permissions */
-	permbuf[0] = *xitoa((ent->mode >> 6) & 7);
-	permbuf[0] = permbuf[0] ? permbuf[0] : '0';
-	permbuf[1] = *xitoa((ent->mode >> 3) & 7);
-	permbuf[1] = permbuf[1] ? permbuf[1] : '0';
-	permbuf[2] = *xitoa(ent->mode & 7);
-	permbuf[2] = permbuf[2] ? permbuf[2] : '0';
+	permbuf[0] = '0' + ((ent->mode >> 6) & 7);
+	permbuf[1] = '0' + ((ent->mode >> 3) & 7);
+	permbuf[2] = '0' + (ent->mode & 7);
 	permbuf[3] = '\0';
 
 	/* Trim escape chars from name */
@@ -2146,6 +2265,42 @@ static void printent_long(const struct entry *ent, int sel, uint namecols)
 }
 
 static void (*printptr)(const struct entry *ent, int sel, uint namecols) = &printent_long;
+
+static void savecurctx(settings *curcfg, char *path, char *curname, int r /* next context num */)
+{
+	settings cfg = *curcfg;
+	bool copymode = cfg.copymode ? TRUE : FALSE;
+
+#ifdef DIR_LIMITED_COPY
+	g_crc = 0;
+#endif
+	/* Save current context */
+	xstrlcpy(g_ctx[cfg.curctx].c_name, curname, NAME_MAX + 1);
+	g_ctx[cfg.curctx].c_cfg = cfg;
+
+	if (g_ctx[r].c_cfg.ctxactive) { /* Switch to saved context */
+		/* Switch light/detail mode */
+		if (cfg.showdetail != g_ctx[r].c_cfg.showdetail)
+			/* set the reverse */
+			printptr = cfg.showdetail ? &printent : &printent_long;
+
+		cfg = g_ctx[r].c_cfg;
+	} else { /* Setup a new context from current context */
+		g_ctx[r].c_cfg.ctxactive = 1;
+		xstrlcpy(g_ctx[r].c_path, path, PATH_MAX);
+		g_ctx[r].c_last[0] = '\0';
+		xstrlcpy(g_ctx[r].c_name, curname, NAME_MAX + 1);
+		g_ctx[r].c_fltr[0] = g_ctx[r].c_fltr[1] = '\0';
+		g_ctx[r].c_cfg = cfg;
+		g_ctx[r].c_cfg.runplugin = 0;
+	}
+
+	/* Continue copy mode */
+	cfg.copymode = copymode;
+	cfg.curctx = r;
+
+	*curcfg = cfg;
+}
 
 /*
  * Gets only a single line (that's what we need
@@ -2233,24 +2388,22 @@ static bool show_stats(const char *fpath, const char *fname, const struct stat *
 {
 	int fd;
 	char *p, *begin = g_buf;
+	size_t r;
 	FILE *fp;
 
-	if (g_tmpfpath[0])
-		xstrlcpy(g_tmpfpath + g_tmpfplen - 1, messages[STR_TMPFILE],
-			 HOME_LEN_MAX - g_tmpfplen);
-	else
-		return FALSE;
-
-	fd = mkstemp(g_tmpfpath);
+	fd = create_tmp_file();
 	if (fd == -1)
 		return FALSE;
 
-	xstrlcpy(g_buf, "stat ", 6);
-	xstrlcpy(g_buf + 5, fpath, PATH_MAX);
+	r = xstrlcpy(g_buf, "stat \'", PATH_MAX);
+	r += xstrlcpy(g_buf + r - 1, fpath, PATH_MAX);
+	g_buf[r - 2] = '\'';
+	g_buf[r - 1] = '\0';
+	DPRINTF_S(g_buf);
 
 	fp = popen(g_buf, "r");
-	if (fp != NULL) {
-		while (fgets(g_buf, CMD_LEN_MAX - 1, fp) != NULL)
+	if (fp) {
+		while (fgets(g_buf, CMD_LEN_MAX - 1, fp))
 			dprintf(fd, "%s", g_buf);
 		pclose(fp);
 	}
@@ -2289,9 +2442,9 @@ static size_t get_fs_info(const char *path, bool type)
 		return 0;
 
 	if (type == CAPACITY)
-		return svb.f_blocks << ffs(svb.f_bsize >> 1);
+		return svb.f_blocks << ffs((int)(svb.f_bsize >> 1));
 
-	return svb.f_bavail << ffs(svb.f_frsize >> 1);
+	return svb.f_bavail << ffs((int)(svb.f_frsize >> 1));
 }
 
 static bool show_mediainfo(const char *fpath, const char *arg)
@@ -2305,17 +2458,154 @@ static bool show_mediainfo(const char *fpath, const char *arg)
 	return TRUE;
 }
 
-static bool handle_archive(char *fpath, char *arg, const char *dir)
+/* Extracts or lists archive */
+static bool handle_archive(char *fpath, const char *dir, char op)
 {
-	if (!getutil(utils[ATOOL]))
+	char larg[] = "-tf";
+	char xarg[] = "-xf";
+	char *util;
+
+	if (getutil(utils[ATOOL])) {
+		util = utils[ATOOL];
+		larg[1] = op;
+		larg[2] = xarg[2] = '\0';
+	} else if (getutil(utils[BSDTAR]))
+		util = utils[BSDTAR];
+	else
 		return FALSE;
 
-	if (arg[1] == 'x')
-		spawn(utils[ATOOL], arg, fpath, dir, F_NORMAL);
-	else {
+	if (op == 'x') { // extract
+		spawn(util, xarg, fpath, dir, F_NORMAL);
+	} else { // list
 		exitcurses();
-		get_output(NULL, 0, utils[ATOOL], arg, fpath, TRUE);
+		get_output(NULL, 0, util, larg, fpath, TRUE);
 		refresh();
+	}
+
+	return TRUE;
+}
+
+static char *visit_parent(char *path, char *newpath, int *presel)
+{
+	char *dir;
+
+	/* There is no going back */
+	if (istopdir(path)) {
+		/* Continue in navigate-as-you-type mode, if enabled */
+		if (cfg.filtermode)
+			*presel = FILTER;
+		return NULL;
+	}
+
+	/* Use a copy as dirname() may change the string passed */
+	xstrlcpy(newpath, path, PATH_MAX);
+
+	dir = dirname(newpath);
+	if (access(dir, R_OK) == -1) {
+		printwarn(presel);
+		return NULL;
+	}
+
+	return dir;
+}
+
+static bool execute_file(int cur, char *path, char *newpath, int *presel)
+{
+	if (!ndents)
+		return FALSE;
+
+	/* Check if this is a directory */
+	if (!S_ISREG(dents[cur].mode)) {
+		printwait("not regular file", presel);
+		return FALSE;
+	}
+
+	/* Check if file is executable */
+	if (!(dents[cur].mode & 0100)) {
+		printwait("permission denied", presel);
+		return FALSE;
+	}
+
+	mkpath(path, dents[cur].name, newpath);
+	spawn(newpath, NULL, NULL, path, F_NORMAL);
+
+	return TRUE;
+}
+
+static bool create_dir(const char *path)
+{
+	if (!xdiraccess(path)) {
+		if (errno != ENOENT)
+			return FALSE;
+
+		if (mkdir(path, 0755) == -1)
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+static bool sshfs_mount(char *path, char *newpath, int *presel)
+{
+	int r;
+	char *tmp;
+
+	tmp = xreadline(NULL, "host: ");
+	if (!tmp[0])
+		return FALSE;
+
+	/* Create the mount point */
+	mkpath(cfgdir, tmp, newpath);
+	if (!create_dir(newpath)) {
+		printwait(strerror(errno), presel);
+		return FALSE;
+	}
+
+	if (!getutil("sshfs")) {
+		printwait("sshfs missing", presel);
+		return FALSE;
+	}
+
+	/* Convert "Host" to "Host:" */
+	r = strlen(tmp);
+	tmp[r] = ':';
+	tmp[r + 1] = '\0';
+
+	/* Connect to remote */
+	if (spawn("sshfs", tmp, newpath, NULL, F_NORMAL)) {
+		printwait("mount failed", presel);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static bool sshfs_unmount(char *path, char *newpath, int *presel)
+{
+	static char cmd[] = "fusermount3"; /* Arch Linux utility */
+	static bool found = FALSE;
+	char *tmp;
+
+	/* On Ubuntu it's fusermount */
+	if (!found && !getutil(cmd)) {
+		cmd[10] = '\0';
+		found = TRUE;
+	}
+
+	tmp = xreadline(NULL, "host: ");
+	if (!tmp[0])
+		return FALSE;
+
+	/* Create the mount point */
+	mkpath(cfgdir, tmp, newpath);
+	if (!xdiraccess(newpath)) {
+		*presel = MSGWAIT;
+		return FALSE;
+	}
+
+	if (spawn(cmd, "-u", newpath, NULL, F_NORMAL)) {
+		printwait("unmount failed", presel);
+		return FALSE;
 	}
 
 	return TRUE;
@@ -2338,14 +2628,13 @@ static bool show_help(const char *path)
 		"1NAVIGATION\n"
 		"a↑ k  Up          PgUp ^U  Scroll up\n"
 		"a↓ j  Down        PgDn ^D  Scroll down\n"
-		"a← h  Parent dir        ~  Go HOME\n"
-	      "8↵ → l  Open file/dir     @  Start dir\n"
-	  "4Home g ^A  First entry       -  Last visited dir\n"
-	   "5End G ^E  Last entry        .  Toggle show hidden\n"
+		"a← h  Parent dir  ~ ` @ -  HOME, /, start, last\n"
+	      "8↵ → l  Open file/dir     .  Toggle show hidden\n"
+	  "4Home g ^A  First entry    G ^E  Last entry\n"
 		  "c/  Filter       Ins ^T  Toggle nav-as-you-type\n"
 		  "cb  Pin current dir  ^B  Go to pinned dir\n"
 	     "7Tab ^I  Next context      d  Toggle detail view\n"
-	       "9, ^/  Leader key  N LeadN  Enter context N\n"
+	       "9, ^/  Leader key  N LeadN  Context N\n"
 		"aEsc  Exit prompt      ^L  Redraw/clear prompt\n"
 		 "b^G  Quit and cd       q  Quit context\n"
 	       "9Q ^Q  Quit              ?  Help, config\n"
@@ -2364,18 +2653,11 @@ static bool show_help(const char *path)
 		 "b^W  Random  s  Size   t  Time modified\n"
 		"1MISC\n"
 	       "9! ^]  Spawn SHELL       C  Execute entry\n"
-	       "9R ^V  Run/pick script   L  Lock terminal\n"
+	       "9R ^V  Pick plugin       L  Lock terminal\n"
+	          "cc  SSHFS mount       u  Unmount\n"
 		 "b^P  Prompt  ^N  Note  =  Launcher\n"};
 
-	if (g_tmpfpath[0])
-		xstrlcpy(g_tmpfpath + g_tmpfplen - 1, messages[STR_TMPFILE],
-			 HOME_LEN_MAX - g_tmpfplen);
-	else {
-		printmsg(messages[STR_NOHOME_ID]);
-		return FALSE;
-	}
-
-	fd = mkstemp(g_tmpfpath);
+	fd = create_tmp_file();
 	if (fd == -1)
 		return FALSE;
 
@@ -2405,16 +2687,12 @@ static bool show_help(const char *path)
 
 	for (i = NNN_OPENER; i <= NNN_TRASH; ++i) {
 		start = getenv(env_cfg[i]);
-		if (start) {
-			if (i < NNN_USE_EDITOR)
+		if (start)
 				dprintf(fd, "%s: %s\n", env_cfg[i], start);
-			else
-				dprintf(fd, "%s: 1\n", env_cfg[i]);
-		}
 	}
 
-	if (g_cppath[0])
-		dprintf(fd, "COPY FILE: %s\n", g_cppath);
+	if (g_cppath)
+		dprintf(fd, "SELECTION FILE: %s\n", g_cppath);
 
 	dprintf(fd, "\nv%s\n%s\n", VERSION, GENERAL_INFO);
 	close(fd);
@@ -2452,17 +2730,17 @@ static void dentfree(void)
 
 static int dentfill(char *path, struct entry **dents)
 {
-	int n = 0, count;
+	static uint open_max;
+	int n = 0, count, flags = 0;
 	ulong num_saved;
 	struct dirent *dp;
-	char *namep, *pnb;
+	char *namep, *pnb, *buf = NULL;
 	struct entry *dentp;
 	size_t off = 0, namebuflen = NAMEBUF_INCR;
 	struct stat sb_path, sb;
 	DIR *dirp = opendir(path);
-	static uint open_max;
 
-	if (dirp == NULL)
+	if (!dirp)
 		return 0;
 
 	int fd = dirfd(dirp);
@@ -2470,10 +2748,11 @@ static int dentfill(char *path, struct entry **dents)
 	if (cfg.blkorder) {
 		num_files = 0;
 		dir_blocks = 0;
+		buf = (char *)alloca(strlen(path) + NAME_MAX + 2);
 
-		if (fstatat(fd, ".", &sb_path, 0) == -1) {
+		if (fstatat(fd, path, &sb_path, 0) == -1) {
 			closedir(dirp);
-			printwarn();
+			printwarn(NULL);
 			return 0;
 		}
 
@@ -2482,7 +2761,22 @@ static int dentfill(char *path, struct entry **dents)
 			open_max = max_openfds();
 	}
 
-	while ((dp = readdir(dirp)) != NULL) {
+	dp = readdir(dirp);
+	// if (!dp) /* We have opened the dir, at least . would be returned */
+	//	goto exit;
+
+	if (cfg.blkorder || dp->d_type == DT_UNKNOWN) {
+		/*
+		 * Optimization added for filesystems which support dirent.d_type
+		 * see readdir(3)
+		 * Known drawbacks:
+		 * - the symlink size is set to 0
+		 * - the modification time of the symlink is set to that of the target file
+		 */
+		flags = AT_SYMLINK_NOFOLLOW;
+	}
+
+	do {
 		namep = dp->d_name;
 
 		/* Skip self and parent */
@@ -2499,12 +2793,12 @@ static int dentfill(char *path, struct entry **dents)
 			if (S_ISDIR(sb.st_mode)) {
 				if (sb_path.st_dev == sb.st_dev) {
 					ent_blocks = 0;
-					mkpath(path, namep, g_buf);
+					mkpath(path, namep, buf);
 
 					mvprintw(xlines - 1, 0, "scanning %s [^C aborts]\n",
-						 xbasename(g_buf));
+						 xbasename(buf));
 					refresh();
-					if (nftw(g_buf, nftw_fn, open_max,
+					if (nftw(buf, nftw_fn, open_max,
 						 FTW_MOUNT | FTW_PHYS) == -1) {
 						DPRINTF_S("nftw failed");
 						dir_blocks += (cfg.apparentsz
@@ -2526,7 +2820,7 @@ static int dentfill(char *path, struct entry **dents)
 			continue;
 		}
 
-		if (fstatat(fd, namep, &sb, AT_SYMLINK_NOFOLLOW) == -1) {
+		if (fstatat(fd, namep, &sb, flags) == -1) {
 			DPRINTF_S(namep);
 			continue;
 		}
@@ -2534,7 +2828,7 @@ static int dentfill(char *path, struct entry **dents)
 		if (n == total_dents) {
 			total_dents += ENTRY_INCR;
 			*dents = xrealloc(*dents, total_dents * sizeof(**dents));
-			if (*dents == NULL) {
+			if (!*dents) {
 				free(pnamebuf);
 				closedir(dirp);
 				errexit();
@@ -2548,7 +2842,7 @@ static int dentfill(char *path, struct entry **dents)
 
 			pnb = pnamebuf;
 			pnamebuf = (char *)xrealloc(pnamebuf, namebuflen);
-			if (pnamebuf == NULL) {
+			if (!pnamebuf) {
 				free(*dents);
 				closedir(dirp);
 				errexit();
@@ -2569,27 +2863,31 @@ static int dentfill(char *path, struct entry **dents)
 
 		dentp = *dents + n;
 
-		/* Copy file name */
+		/* Selection file name */
 		dentp->name = (char *)((size_t)pnamebuf + off);
 		dentp->nlen = xstrlcpy(dentp->name, namep, NAME_MAX + 1);
 		off += dentp->nlen;
 
 		/* Copy other fields */
-		dentp->mode = sb.st_mode;
 		dentp->t = sb.st_mtime;
-		dentp->size = sb.st_size;
+		if (dp->d_type == DT_LNK && !flags) { /* Do not add sizes for links */
+			dentp->mode = (sb.st_mode & ~S_IFMT) | S_IFLNK;
+			dentp->size = 0;
+		} else {
+			dentp->mode = sb.st_mode;
+			dentp->size = sb.st_size;
+		}
 		dentp->flags = 0;
 
 		if (cfg.blkorder) {
 			if (S_ISDIR(sb.st_mode)) {
 				ent_blocks = 0;
 				num_saved = num_files + 1;
-				mkpath(path, namep, g_buf);
+				mkpath(path, namep, buf);
 
-				mvprintw(xlines - 1, 0, "scanning %s [^C aborts]\n",
-					 xbasename(g_buf));
+				mvprintw(xlines - 1, 0, "scanning %s [^C aborts]\n", xbasename(buf));
 				refresh();
-				if (nftw(g_buf, nftw_fn, open_max, FTW_MOUNT | FTW_PHYS) == -1) {
+				if (nftw(buf, nftw_fn, open_max, FTW_MOUNT | FTW_PHYS) == -1) {
 					DPRINTF_S("nftw failed");
 					dentp->blocks = (cfg.apparentsz ? sb.st_size : sb.st_blocks);
 				} else
@@ -2611,18 +2909,22 @@ static int dentfill(char *path, struct entry **dents)
 			}
 		}
 
-		/* Flag if this is a dir or symlink to a dir */
-		if (S_ISLNK(sb.st_mode)) {
-			sb.st_mode = 0;
-			fstatat(fd, namep, &sb, 0);
-		}
+		if (flags) {
+			/* Flag if this is a dir or symlink to a dir */
+			if (S_ISLNK(sb.st_mode)) {
+				sb.st_mode = 0;
+				fstatat(fd, namep, &sb, 0);
+			}
 
-		if (S_ISDIR(sb.st_mode))
+			if (S_ISDIR(sb.st_mode))
+				dentp->flags |= DIR_OR_LINK_TO_DIR;
+		} else if (dp->d_type == DT_DIR || (dp->d_type == DT_LNK && S_ISDIR(sb.st_mode)))
 			dentp->flags |= DIR_OR_LINK_TO_DIR;
 
 		++n;
-	}
+	} while ((dp = readdir(dirp)));
 
+//exit:
 	/* Should never be null */
 	if (closedir(dirp) == -1) {
 		dentfree();
@@ -2670,9 +2972,33 @@ static void populate(char *path, char *lastname)
 	/* Find cur from history */
 	/* No NULL check for lastname, always points to an array */
 	if (!*lastname)
-		cur = 0;
+		move_cursor(0, 0);
 	else
-		cur = dentfind(lastname, ndents);
+		move_cursor(dentfind(lastname, ndents), 0);
+}
+
+static void move_cursor(int target, int ignore_scrolloff)
+{
+	int delta, scrolloff, onscreen = xlines - 4;
+	target = MAX(0, MIN(ndents - 1, target));
+	delta = target - cur;
+	cur = target;
+	if (!ignore_scrolloff) {
+		scrolloff = MIN(SCROLLOFF, onscreen >> 1);
+		/*
+		 * When ignore_scrolloff is 1, the cursor can jump into the scrolloff
+		 * margin area, but when ignore_scrolloff is 0, act like a boa
+		 * constrictor and squeeze the cursor towards the middle region of the
+		 * screen by allowing it to move inward and disallowing it to move
+		 * outward (deeper into the scrolloff margin area).
+		 */
+		if (cur < curscroll + scrolloff && delta < 0)
+			curscroll += delta;
+		else if (cur > curscroll + onscreen - scrolloff - 1 && delta > 0)
+			curscroll += delta;
+	}
+	curscroll = MIN(curscroll, MIN(cur, ndents - onscreen));
+	curscroll = MAX(curscroll, MAX(cur - (onscreen - 1), 0));
 }
 
 static void redraw(char *path)
@@ -2681,8 +3007,8 @@ static void redraw(char *path)
 	xcols = COLS;
 
 	int ncols = (xcols <= PATH_MAX) ? xcols : PATH_MAX;
-	int lastln = xlines;
-	int nlines = MIN(lastln - 4, ndents), i, attrs;
+	int lastln = xlines, onscreen = xlines - 4;
+	int i, attrs;
 	char buf[12];
 	char c;
 
@@ -2690,6 +3016,9 @@ static void redraw(char *path)
 
 	/* Clear screen */
 	erase();
+
+	/* Enforce scroll/cursor invariants */
+	move_cursor(cur, 1);
 
 #ifdef DIR_LIMITED_COPY
 	if (cfg.copymode)
@@ -2756,18 +3085,8 @@ static void redraw(char *path)
 	}
 
 	/* Print listing */
-	if (cur < (nlines >> 1)) {
-		for (i = 0; i < nlines; ++i)
-			printptr(&dents[i], i == cur, ncols);
-	} else if (cur >= ndents - (nlines >> 1)) {
-		for (i = ndents - nlines; i < ndents; ++i)
-			printptr(&dents[i], i == cur, ncols);
-	} else {
-		const int odd = ISODD(nlines);
-
-		nlines >>= 1;
-		for (i = cur - nlines; i < cur + nlines + odd; ++i)
-			printptr(&dents[i], i == cur, ncols);
+	for (i = curscroll; i < ndents && i < curscroll + onscreen; ++i) {
+		printptr(&dents[i], i == cur, ncols);
 	}
 
 	/* Must reset e.g. no files in dir */
@@ -2817,13 +3136,12 @@ static void browse(char *ipath)
 	char mark[PATH_MAX] __attribute__ ((aligned));
 	char rundir[PATH_MAX] __attribute__ ((aligned));
 	char runfile[NAME_MAX + 1] __attribute__ ((aligned));
-	int r = -1, fd, presel, ncp = 0, copystartid = 0, copyendid = 0;
+	int r = -1, fd, presel, ncp = 0, copystartid = 0, copyendid = 0, onscreen;
 	enum action sel;
 	bool dir_changed = FALSE;
 	struct stat sb;
-	char *path, *lastdir, *lastname;
-	char *dir, *tmp;
-	char *scriptpath = getenv(env_cfg[NNN_SCRIPT]);
+	char *path, *lastdir, *lastname, *dir, *tmp;
+	MEVENT event;
 
 	atexit(dentfree);
 
@@ -2834,6 +3152,7 @@ static void browse(char *ipath)
 	rundir[0] = runfile[0] = '\0';
 	lastdir = g_ctx[0].c_last; /* last visited directory */
 	lastname = g_ctx[0].c_name; /* last visited filename */
+	g_ctx[0].c_fltr[0] = g_ctx[0].c_fltr[1] = '\0';
 	g_ctx[0].c_cfg = cfg; /* current configuration */
 
 	cfg.filtermode ?  (presel = FILTER) : (presel = 0);
@@ -2865,10 +3184,8 @@ begin:
 	/* Can fail when permissions change while browsing.
 	 * It's assumed that path IS a directory when we are here.
 	 */
-	if (access(path, R_OK) == -1) {
-		printwarn();
-		goto nochange;
-	}
+	if (access(path, R_OK) == -1)
+		printwarn(&presel);
 
 	populate(path, lastname);
 	if (interrupted) {
@@ -2907,31 +3224,65 @@ nochange:
 			presel = 0;
 
 		switch (sel) {
+		case SEL_CLICK:
+			if (getmouse(&event) != OK)
+				goto nochange; // fallthrough
 		case SEL_BACK:
-			/* There is no going back */
-			if (istopdir(path)) {
-				/* Continue in navigate-as-you-type mode, if enabled */
-				if (cfg.filtermode)
-					presel = FILTER;
+			// Handle right click to go to parent
+			if ((sel == SEL_BACK)
+			    || (sel == SEL_CLICK && event.bstate == BUTTON2_CLICKED)) {
+				dir = visit_parent(path, newpath, &presel);
+				if (!dir)
+					goto nochange;
+
+				/* Save last working directory */
+				xstrlcpy(lastdir, path, PATH_MAX);
+
+				/* Save history */
+				xstrlcpy(lastname, xbasename(path), NAME_MAX + 1);
+
+				xstrlcpy(path, dir, PATH_MAX);
+
+				setdirwatch();
+				goto begin;
+			}
+
+			// Handle clicking on a context at the top:
+			if (event.y == 0) {
+				// Get context from: "[1 2 3 4]..."
+				r = event.x >> 1;
+
+				if (event.x != 1 + (r << 1))
+					goto nochange; // The character after the context number
+
+				if (0 <= r && r < CTX_MAX && r != cfg.curctx) {
+					savecurctx(&cfg, path, dents[cur].name, r);
+
+					/* Reset the pointers */
+					path = g_ctx[r].c_path;
+					lastdir = g_ctx[r].c_last;
+					lastname = g_ctx[r].c_name;
+
+					setdirwatch();
+					goto begin;
+				}
 				goto nochange;
 			}
 
-			dir = xdirname(path);
-			if (access(dir, R_OK) == -1) {
-				printwarn();
-				goto nochange;
-			}
+			// Handle clicking on a file:
+			if (2 <= event.y && event.y < xlines - 2) {
+				r = curscroll + (event.y - 2);
 
-			/* Save history */
-			xstrlcpy(lastname, xbasename(path), NAME_MAX + 1);
+				if (r >= ndents)
+					goto nochange;
 
-			/* Save last working directory */
-			xstrlcpy(lastdir, path, PATH_MAX);
+				move_cursor(r, 1);
 
-			xstrlcpy(path, dir, PATH_MAX);
-
-			setdirwatch();
-			goto begin;
+				// Single click just selects, double click also opens
+				if (event.bstate != BUTTON1_DOUBLE_CLICKED)
+					break;
+			} else
+				goto nochange; // fallthrough
 		case SEL_NAV_IN: // fallthrough
 		case SEL_GOIN:
 			/* Cannot descend in empty directories */
@@ -2943,7 +3294,7 @@ nochange:
 
 			/* Cannot use stale data in entry, file may be missing by now */
 			if (stat(newpath, &sb) == -1) {
-				printwarn();
+				printwarn(&presel);
 				goto nochange;
 			}
 			DPRINTF_U(sb.st_mode);
@@ -2951,7 +3302,7 @@ nochange:
 			switch (sb.st_mode & S_IFMT) {
 			case S_IFDIR:
 				if (access(newpath, R_OK) == -1) {
-					printwarn();
+					printwarn(&presel);
 					goto nochange;
 				}
 
@@ -2976,11 +3327,11 @@ nochange:
 				if (cfg.nonavopen && sel == SEL_NAV_IN)
 					continue;
 
-				/* Handle script selection mode */
-				if (cfg.runscript) {
-					if (!scriptpath || (cfg.runctx != cfg.curctx)
-					    /* Must be in script directory to select script */
-					    || (strcmp(path, scriptpath) != 0))
+				/* Handle plugin selection mode */
+				if (cfg.runplugin) {
+					if (!plugindir || (cfg.runctx != cfg.curctx)
+					    /* Must be in plugin directory to select plugin */
+					    || (strcmp(path, plugindir) != 0))
 						continue;
 
 					mkpath(path, dents[cur].name, newpath);
@@ -2993,7 +3344,7 @@ nochange:
 					} else
 						spawn(newpath, NULL, NULL, path, F_NORMAL);
 					rundir[0] = '\0';
-					cfg.runscript = 0;
+					cfg.runplugin = 0;
 					setdirwatch();
 					goto begin;
 				}
@@ -3013,7 +3364,7 @@ nochange:
 				}
 
 				/* Invoke desktop opener as last resort */
-				spawn(opener, newpath, NULL, NULL, F_NOTRACE);
+				spawn(opener, newpath, NULL, NULL, F_NOTRACE | F_NOWAIT);
 				continue;
 			}
 			default:
@@ -3021,46 +3372,56 @@ nochange:
 				goto nochange;
 			}
 		case SEL_NEXT:
-			if (cur < ndents - 1)
-				++cur;
-			else if (ndents)
-				/* Roll over, set cursor to first entry */
-				cur = 0;
+			if (ndents)
+				move_cursor((cur + 1) % ndents, 0);
 			break;
 		case SEL_PREV:
-			if (cur > 0)
-				--cur;
-			else if (ndents)
-				/* Roll over, set cursor to last entry */
-				cur = ndents - 1;
+			if (ndents)
+				move_cursor((cur + ndents - 1) % ndents, 0);
 			break;
-		case SEL_PGDN:
-			if (cur < ndents - 1)
-				cur += MIN((xlines - 4) / 2, ndents - 1 - cur);
+		case SEL_PGDN: // fallthrough
+			onscreen = xlines - 4;
+			move_cursor(curscroll + (onscreen - 1), 1);
+			curscroll += onscreen - 1;
 			break;
-		case SEL_PGUP:
-			if (cur > 0)
-				cur -= MIN((xlines - 4) / 2, cur);
+		case SEL_CTRL_D:
+			onscreen = xlines - 4;
+			move_cursor(curscroll + (onscreen - 1), 1);
+			curscroll += onscreen >> 1;
+			break;
+		case SEL_PGUP: // fallthrough
+			onscreen = xlines - 4;
+			move_cursor(curscroll, 1);
+			curscroll -= onscreen - 1;
+			break;
+		case SEL_CTRL_U:
+			onscreen = xlines - 4;
+			move_cursor(curscroll, 1);
+			curscroll -= onscreen >> 1;
 			break;
 		case SEL_HOME:
-			cur = 0;
+			move_cursor(0, 1);
 			break;
 		case SEL_END:
-			cur = ndents - 1;
+			move_cursor(ndents - 1, 1);
 			break;
 		case SEL_CDHOME: // fallthrough
 		case SEL_CDBEGIN: // fallthrough
 		case SEL_CDLAST: // fallthrough
+		case SEL_CDROOT: // fallthrough
 		case SEL_VISIT:
 			switch (sel) {
 			case SEL_CDHOME:
-				home ? (dir = home) : (dir = path);
+				dir = home;
 				break;
 			case SEL_CDBEGIN:
 				dir = ipath;
 				break;
 			case SEL_CDLAST:
 				dir = lastdir;
+				break;
+			case SEL_CDROOT:
+				dir = "/";
 				break;
 			default: /* case SEL_VISIT */
 				dir = mark;
@@ -3072,11 +3433,13 @@ nochange:
 				goto nochange;
 			}
 
-			if (!xdiraccess(dir))
+			if (!xdiraccess(dir)) {
+				presel = MSGWAIT;
 				goto nochange;
+			}
 
 			if (strcmp(path, dir) == 0)
-				break;
+				goto nochange;
 
 			/* SEL_CDLAST: dir pointing to lastdir */
 			xstrlcpy(newpath, dir, PATH_MAX);
@@ -3105,6 +3468,7 @@ nochange:
 			switch (fd) {
 			case 'q': // fallthrough
 			case '~': // fallthrough
+			case '`': // fallthrough
 			case '-': // fallthrough
 			case '@':
 				presel = fd;
@@ -3151,7 +3515,7 @@ nochange:
 				goto begin;
 			}
 
-			if (get_bm_loc(newpath, fd) == NULL) {
+			if (!get_bm_loc(newpath, fd)) {
 				printwait(messages[STR_INVBM_KEY], &presel);
 				goto nochange;
 			}
@@ -3292,7 +3656,7 @@ nochange:
 
 			mkpath(path, dents[cur].name, newpath);
 			if (lstat(newpath, &sb) == -1 || !show_stats(newpath, dents[cur].name, &sb)) {
-				printwarn();
+				printwarn(&presel);
 				goto nochange;
 			}
 			break;
@@ -3300,12 +3664,12 @@ nochange:
 		case SEL_FMEDIA: // fallthrough
 		case SEL_ARCHIVELS: // fallthrough
 		case SEL_EXTRACT: // fallthrough
-		case SEL_RENAMEALL: // fallthrough
 		case SEL_RUNEDIT: // fallthrough
 		case SEL_RUNPAGE:
 			if (!ndents)
 				break; // fallthrough
 		case SEL_REDRAW: // fallthrough
+		case SEL_RENAMEALL: // fallthrough
 		case SEL_HELP: // fallthrough
 		case SEL_NOTE: // fallthrough
 		case SEL_LOCK:
@@ -3322,19 +3686,20 @@ nochange:
 				setdirwatch();
 				goto nochange;
 			case SEL_ARCHIVELS:
-				r = handle_archive(newpath, "-l", path);
+				r = handle_archive(newpath, path, 'l');
 				break;
 			case SEL_EXTRACT:
-				r = handle_archive(newpath, "-x", path);
+				r = handle_archive(newpath, path, 'x');
 				break;
 			case SEL_REDRAW:
 				if (ndents)
 					copycurname();
 				goto begin;
 			case SEL_RENAMEALL:
-				r = getutil(utils[VIDIR]);
-				if (r)
-					spawn(utils[VIDIR], ".", NULL, path, F_NORMAL);
+				if (!batch_rename(path)) {
+					printwait("batch rename failed", &presel);
+					goto nochange;
+				}
 				break;
 			case SEL_HELP:
 				r = show_help(path);
@@ -3364,7 +3729,7 @@ nochange:
 			}
 
 			if (!r) {
-				printwait("utility missing", &presel);
+				printwait(messages[UTIL_MISSING], &presel);
 				goto nochange;
 			}
 
@@ -3387,7 +3752,7 @@ nochange:
 
 			if (cfg.copymode) {
 				/*
-				 * Clear the tmp copy path file on first copy.
+				 * Clear the selection file on first copy.
 				 *
 				 * This ensures that when the first file path is
 				 * copied into memory (but not written to tmp file
@@ -3496,7 +3861,7 @@ nochange:
 				break;
 			}
 
-			printwait("none selected", &presel);
+			printwait(messages[NONE_SELECTED], &presel);
 			goto nochange;
 		case SEL_CP:
 		case SEL_MV:
@@ -3537,8 +3902,9 @@ nochange:
 
 			/* Don't optimize cur if filtering is on */
 			if (!cfg.filtermode && cur && access(newpath, F_OK) == -1)
-				--cur;
+				move_cursor(cur - 1, 0);
 
+			/* We reduce cur only if it is > 0, so it's at least 0 */
 			copycurname();
 
 			if (cfg.filtermode)
@@ -3569,7 +3935,14 @@ nochange:
 				tmp = xreadline(tmp, "archive name: ");
 				break;
 			case SEL_OPENWITH:
+#ifdef NORL
 				tmp = xreadline(NULL, "open with: ");
+#else
+				presel = 0;
+				tmp = getreadline("open with: ", path, ipath, &presel);
+				if (presel == MSGWAIT)
+					goto nochange;
+#endif
 				break;
 			case SEL_NEW:
 				tmp = xreadline(NULL, "name/link suffix [@ for none]: ");
@@ -3579,7 +3952,7 @@ nochange:
 				break;
 			}
 
-			if (tmp == NULL || tmp[0] == '\0')
+			if (!tmp || !*tmp)
 				break;
 
 			/* Allow only relative, same dir paths */
@@ -3597,16 +3970,21 @@ nochange:
 
 			switch (sel) {
 			case SEL_ARCHIVE:
-				/* newpath is used as temporary buffer */
-				if (!getutil(utils[APACK])) {
-					printwait("utility missing", &presel);
+			{
+				char cmd[] = "bsdtar -cf";
+
+				if (getutil(utils[ATOOL]))
+					xstrlcpy(cmd, "atool -a", 10);
+				else if (!getutil(utils[BSDTAR])) {
+					printwait(messages[UTIL_MISSING], &presel);
 					goto nochange;
 				}
 
-				(r == 'y' || r == 'Y') ? archive_selection(tmp, path)
-						       : spawn(utils[APACK], tmp, dents[cur].name,
-							       path, F_NORMAL);
+				(r == 'y' || r == 'Y') ? archive_selection(cmd, tmp, path)
+						       : spawn(cmd, tmp, dents[cur].name,
+							       path, F_NORMAL | F_MULTI);
 				break;
+			}
 			case SEL_OPENWITH:
 				mkpath(path, dents[cur].name, newpath);
 				spawn(tmp, newpath, NULL, path, r);
@@ -3636,7 +4014,7 @@ nochange:
 			/* Open the descriptor to currently open directory */
 			fd = open(path, O_RDONLY | O_DIRECTORY);
 			if (fd == -1) {
-				printwarn();
+				printwarn(&presel);
 				goto nochange;
 			}
 
@@ -3661,7 +4039,7 @@ nochange:
 				/* Rename the file */
 				if (renameat(fd, dents[cur].name, fd, tmp) != 0) {
 					close(fd);
-					printwarn();
+					printwarn(&presel);
 					goto nochange;
 				}
 			} else {
@@ -3675,13 +4053,11 @@ nochange:
 				} else if (r == 's' || r == 'h') {
 					if (tmp[0] == '@' && tmp[1] == '\0')
 						tmp[0] = '\0';
-					r = xlink(tmp, path, newpath, r);
+					r = xlink(tmp, path, newpath, &presel, r);
 					close(fd);
 
-					if (r <= 0) {
-						printwait("none created", &presel);
+					if (r <= 0)
 						goto nochange;
-					}
 
 					if (cfg.filtermode)
 						presel = FILTER;
@@ -3695,8 +4071,8 @@ nochange:
 
 				/* Check if file creation failed */
 				if (r == -1) {
+					printwarn(&presel);
 					close(fd);
-					printwarn();
 					goto nochange;
 				}
 			}
@@ -3707,63 +4083,39 @@ nochange:
 		}
 		case SEL_EXEC: // fallthrough
 		case SEL_SHELL: // fallthrough
-		case SEL_SCRIPT: // fallthrough
+		case SEL_PLUGIN: // fallthrough
 		case SEL_LAUNCH: // fallthrough
 		case SEL_RUNCMD:
 			switch (sel) {
 			case SEL_EXEC:
-				if (!ndents)
+				if (!execute_file(cur, path, newpath, &presel))
 					goto nochange;
-
-				/* Check if this is a directory */
-				if (!S_ISREG(dents[cur].mode)) {
-					printwait("not regular file", &presel);
-					goto nochange;
-				}
-
-				/* Check if file is executable */
-				if (!(dents[cur].mode & 0100)) {
-					printwait("permission denied", &presel);
-					goto nochange;
-				}
-
-				mkpath(path, dents[cur].name, newpath);
-				DPRINTF_S(newpath);
-				spawn(newpath, NULL, NULL, path, F_NORMAL);
 				break;
 			case SEL_SHELL:
 				spawn(shell, NULL, NULL, path, F_CLI);
 				break;
-			case SEL_SCRIPT:
-				if (!scriptpath) {
-					printwait("set NNN_SCRIPT", &presel);
+			case SEL_PLUGIN:
+				if (!plugindir) {
+					printwait("plugins dir missing", &presel);
 					goto nochange;
 				}
 
-				if (stat(scriptpath, &sb) == -1) {
-					printwarn();
+				if (stat(plugindir, &sb) == -1) {
+					printwarn(&presel);
 					goto nochange;
 				}
 
-				/* Regular script file */
-				if (S_ISREG(sb.st_mode)) {
-					tmp = ndents ? dents[cur].name : NULL;
-					spawn(scriptpath, tmp, NULL, path, F_NORMAL);
-					break;
-				}
-
-				/* Must be a directory or a regular file */
+				/* Must be a directory */
 				if (!S_ISDIR(sb.st_mode))
 					break;
 
-				/* Script directory */
-				cfg.runscript ^= 1;
-				if (!cfg.runscript && rundir[0]) {
+				cfg.runplugin ^= 1;
+				if (!cfg.runplugin && rundir[0]) {
 					/*
-					 * If toggled, and still in the script dir,
+					 * If toggled, and still in the plugin dir,
 					 * switch to original directory
 					 */
-					if (strcmp(path, scriptpath) == 0) {
+					if (strcmp(path, plugindir) == 0) {
 						xstrlcpy(path, rundir, PATH_MAX);
 						xstrlcpy(lastname, runfile, NAME_MAX);
 						rundir[0] = runfile[0] = '\0';
@@ -3774,11 +4126,11 @@ nochange:
 				}
 
 				/* Check if directory is accessible */
-				if (!xdiraccess(scriptpath))
+				if (!xdiraccess(plugindir))
 					goto nochange;
 
 				xstrlcpy(rundir, path, PATH_MAX);
-				xstrlcpy(path, scriptpath, PATH_MAX);
+				xstrlcpy(path, plugindir, PATH_MAX);
 				if (ndents)
 					xstrlcpy(runfile, dents[cur].name, NAME_MAX);
 				cfg.runctx = cfg.curctx;
@@ -3787,7 +4139,7 @@ nochange:
 				goto begin;
 			case SEL_LAUNCH:
 				if (getutil(utils[NLAUNCH])) {
-					spawn(utils[NLAUNCH], NULL, NULL, path, F_NORMAL);
+					spawn(utils[NLAUNCH], "0", NULL, path, F_NORMAL);
 					break;
 				} // fallthrough
 			default: /* SEL_RUNCMD */
@@ -3795,35 +4147,16 @@ nochange:
 				if (cfg.picker) {
 #endif
 					tmp = xreadline(NULL, "> ");
-					if (tmp[0])
-						spawn(shell, "-c", tmp, path, F_CLI);
 #ifndef NORL
 				} else {
-					exitcurses();
-
-					/* Switch to current path for readline(3) */
-					if (chdir(path) == -1) {
-						printwarn();
+					presel = 0;
+					tmp = getreadline("> ", path, ipath, &presel);
+					if (presel == MSGWAIT)
 						goto nochange;
-					}
-
-					tmp = readline("nnn> ");
-
-					if (chdir(ipath) == -1) {
-						printwarn();
-						goto nochange;
-					}
-
-					refresh();
-
-					if (tmp && tmp[0]) {
-						spawn(shell, "-c", tmp, path, F_CLI);
-						/* readline finishing touches */
-						add_history(tmp);
-						free(tmp);
-					}
 				}
 #endif
+				if (tmp[0])
+					spawn(shell, "-c", tmp, path, F_CLI);
 			}
 
 			/* Continue in navigate-as-you-type mode, if enabled */
@@ -3836,6 +4169,23 @@ nochange:
 
 			/* Repopulate as directory content may have changed */
 			goto begin;
+		case SEL_SSHFS:
+			if (!sshfs_mount(path, newpath, &presel))
+				goto nochange;
+
+			lastname[0] = '\0';
+
+			/* Save last working directory */
+			xstrlcpy(lastdir, path, PATH_MAX);
+
+			/* Switch to mount point */
+			xstrlcpy(path, newpath, PATH_MAX);
+
+			setdirwatch();
+			goto begin;
+		case SEL_UMOUNT:
+			sshfs_unmount(path, newpath, &presel);
+			goto nochange;
 		case SEL_QUITCD: // fallthrough
 		case SEL_QUIT:
 			for (r = 0; r < CTX_MAX; ++r)
@@ -3860,21 +4210,31 @@ nochange:
 			}
 			return;
 		case SEL_QUITCTX:
-			fd = cfg.curctx;
+			fd = cfg.curctx; /* fd used as tmp var */
 			for (r = (fd + 1) & ~CTX_MAX;
 			     (r != fd) && !g_ctx[r].c_cfg.ctxactive;
 			     r = ((r + 1) & ~CTX_MAX)) {
 			};
 
 			if (r != fd) {
+				bool copymode = cfg.copymode ? TRUE : FALSE;
+
 				g_ctx[fd].c_cfg.ctxactive = 0;
 
 				/* Switch to next active context */
 				path = g_ctx[r].c_path;
 				lastdir = g_ctx[r].c_last;
 				lastname = g_ctx[r].c_name;
+
+				/* Switch light/detail mode */
+				if (cfg.showdetail != g_ctx[r].c_cfg.showdetail)
+					/* Set the reverse */
+					printptr = cfg.showdetail ? &printent : &printent_long;
+
 				cfg = g_ctx[r].c_cfg;
 
+				/* Continue copy mode */
+				cfg.copymode = copymode;
 				cfg.curctx = r;
 				setdirwatch();
 				goto begin;
@@ -3884,6 +4244,8 @@ nochange:
 			if (xlines != LINES || xcols != COLS) {
 				idle = 0;
 				setdirwatch();
+				if (ndents)
+					copycurname();
 				goto begin;
 			}
 
@@ -3891,6 +4253,8 @@ nochange:
 			if (idletimeout && idle == idletimeout) {
 				idle = 0;
 				spawn(utils[LOCKER], NULL, NULL, NULL, F_NORMAL);
+				if (ndents)
+					copycurname();
 				goto begin;
 			}
 
@@ -3902,7 +4266,7 @@ nochange:
 static void usage(void)
 {
 	fprintf(stdout,
-		"%s: nnn [-b key] [-C] [-d] [-e] [-i] [-l] [-n]\n"
+		"%s: nnn [-b key] [-d] [-e] [-i] [-l] [-n]\n"
 		"           [-p file] [-s] [-S] [-v] [-w] [-h] [PATH]\n\n"
 		"The missing terminal file manager for X.\n\n"
 		"positional args:\n"
@@ -3910,7 +4274,6 @@ static void usage(void)
 		"optional args:\n"
 		" -b key  open bookmark key\n"
 		" -d      show hidden files\n"
-		" -C      disable directory color\n"
 		" -e      use exiftool for media info\n"
 		" -i      nav-as-you-type mode\n"
 		" -l      light mode\n"
@@ -3919,15 +4282,103 @@ static void usage(void)
 		" -s      string filters [default: regex]\n"
 		" -S      du mode\n"
 		" -v      show version\n"
-		" -w      wild mode\n"
+		" -w      wild load\n"
 		" -h      show help\n\n"
 		"v%s\n%s\n", __func__, VERSION, GENERAL_INFO);
 }
 
+static bool setup_config(void)
+{
+	size_t r, len;
+
+	/* Set up configuration file paths */
+	len = strlen(home) + 1 + 20; /* add length of "/.config/nnn/plugins" */
+	cfgdir = (char *)malloc(len);
+	plugindir = (char *)malloc(len);
+	if (!cfgdir || !plugindir) {
+		xerror();
+		return FALSE;
+	}
+	r = xstrlcpy(cfgdir, home, len);
+
+	/* Create ~/.config */
+	xstrlcpy(cfgdir + r - 1, "/.config", len - r);
+	DPRINTF_S(cfgdir);
+	if (!create_dir(cfgdir)) {
+		xerror();
+		return FALSE;
+	}
+
+	/* Create ~/.config/nnn */
+	xstrlcpy(cfgdir + r - 1, "/.config/nnn", len - r);
+	DPRINTF_S(cfgdir);
+	if (!create_dir(cfgdir)) {
+		xerror();
+		return FALSE;
+	}
+
+	xstrlcpy(cfgdir + r + 12 - 1, "/plugins", 9);
+	DPRINTF_S(cfgdir);
+
+	xstrlcpy(plugindir, cfgdir, len);
+	DPRINTF_S(plugindir);
+
+	/* Create ~/.config/nnn/plugins */
+	if (!create_dir(cfgdir)) {
+		xerror();
+		return FALSE;
+	}
+
+	/* Reset to config path */
+	cfgdir[r + 11] = '\0';
+	DPRINTF_S(cfgdir);
+
+	/* Set selection file path */
+	if (!cfg.picker) {
+		/* Length of "/.config/nnn/.selection" */
+		g_cppath = (char *)malloc(len + 3);
+		r = xstrlcpy(g_cppath, cfgdir, len + 3);
+		xstrlcpy(g_cppath + r - 1, "/.selection", 12);
+		DPRINTF_S(g_cppath);
+	}
+
+	return TRUE;
+}
+
+static bool set_tmp_path()
+{
+	char *path;
+
+	if (xdiraccess("/tmp"))
+		g_tmpfplen = xstrlcpy(g_tmpfpath, "/tmp", TMP_LEN_MAX);
+	else {
+		path = getenv("TMPDIR");
+		if (path)
+			g_tmpfplen = xstrlcpy(g_tmpfpath, path, TMP_LEN_MAX);
+		else {
+			fprintf(stderr, "set TMPDIR\n");
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+static void cleanup(void)
+{
+	free(g_cppath);
+	free(plugindir);
+	free(cfgdir);
+	free(initpath);
+
+#ifdef DBGMODE
+	disabledbg();
+#endif
+}
+
 int main(int argc, char *argv[])
 {
-	char cwd[PATH_MAX] __attribute__ ((aligned));
-	char *ipath = NULL;
+	char *arg = NULL;
 	int opt;
 
 	while ((opt = getopt(argc, argv, "Slib:denp:svwh")) != -1) {
@@ -3945,7 +4396,7 @@ int main(int argc, char *argv[])
 			cfg.filtermode = 1;
 			break;
 		case 'b':
-			ipath = optarg;
+			arg = optarg;
 			break;
 		case 'd':
 			cfg.showhidden = 1;
@@ -3961,12 +4412,16 @@ int main(int argc, char *argv[])
 			if (optarg[0] == '-' && optarg[1] == '\0')
 				cfg.pickraw = 1;
 			else {
-				/* copier used as tmp var */
-				copier = realpath(optarg, g_cppath);
-				if (!g_cppath[0]) {
+				int fd = open(optarg, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
+
+				if (fd == -1) {
 					xerror();
 					return 1;
 				}
+
+				close(fd);
+				g_cppath = realpath(optarg, NULL);
+				unlink(g_cppath);
 			}
 			break;
 		case 's':
@@ -3989,10 +4444,8 @@ int main(int argc, char *argv[])
 	}
 
 	/* Confirm we are in a terminal */
-	if (!cfg.picker && !(isatty(0) && isatty(1))) {
-		xerror();
-		return 1;
-	}
+	if (!cfg.picker && !(isatty(0) && isatty(1)))
+		exit(1);
 
 	/* Get the context colors; copier used as tmp var */
 	copier = xgetenv(env_cfg[NNN_CONTEXT_COLORS], "4444");
@@ -4012,34 +4465,74 @@ int main(int argc, char *argv[])
 		++opt;
 	}
 
+#ifdef DBGMODE
+	enabledbg();
+#endif
+
+	atexit(cleanup);
+
+	home = getenv("HOME");
+	if (!home) {
+		fprintf(stderr, "set HOME\n");
+		return 1;
+	}
+	DPRINTF_S(home);
+
+	if (!setup_config())
+		return 1;
+
+	/* Get custom opener, if set */
+	opener = xgetenv(env_cfg[NNN_OPENER], utils[OPENER]);
+	DPRINTF_S(opener);
+
 	/* Parse bookmarks string */
 	if (!parsebmstr()) {
 		fprintf(stderr, "%s\n", env_cfg[NNN_BMS]);
 		return 1;
 	}
 
-	if (ipath) { /* Open a bookmark directly */
-		if (ipath[1] || get_bm_loc(cwd, *ipath) == NULL) {
+	if (arg) { /* Open a bookmark directly */
+		if (arg[1] || (initpath = get_bm_loc(NULL, *arg)) == NULL) {
 			fprintf(stderr, "%s\n", messages[STR_INVBM_KEY]);
 			return 1;
 		}
-
-		ipath = cwd;
 	} else if (argc == optind) {
 		/* Start in the current directory */
-		ipath = getcwd(cwd, PATH_MAX);
-		if (ipath == NULL)
-			ipath = "/";
+		initpath = getcwd(NULL, PATH_MAX);
+		if (!initpath)
+			initpath = "/";
 	} else {
-		ipath = realpath(argv[optind], cwd);
-		if (!ipath) {
+		arg = argv[optind];
+		if (strlen(arg) > 7 && arg[0] == 'f' && arg[1] == 'i' && arg[2] == 'l'
+		    && arg[3] == 'e' && arg[4] == ':' && arg[5] == '/' && arg[6] == '/')
+			arg = arg + 7;
+		initpath = realpath(arg, NULL);
+		DPRINTF_S(initpath);
+		if (!initpath) {
 			xerror();
 			return 1;
+		}
+
+		/*
+		 * If nnn is set as the file manager, applications may try to open
+		 * files by invoking nnn. In that case pass the file path to the
+		 * desktop opener and exit.
+		 */
+		struct stat sb;
+
+		if (stat(initpath, &sb) == -1) {
+			xerror();
+			return 1;
+		}
+
+		if (S_ISREG(sb.st_mode)) {
+			execlp(opener, opener, arg, NULL);
+			return 0;
 		}
 	}
 
 	/* Edit text in EDITOR, if opted */
-	if (getenv(env_cfg[NNN_USE_EDITOR]))
+	if (xgetenv_set(env_cfg[NNN_USE_EDITOR]))
 		cfg.useeditor = 1;
 
 	/* Get VISUAL/EDITOR */
@@ -4075,6 +4568,7 @@ int main(int argc, char *argv[])
 
 	/* Get custom opener, if set */
 	opener = xgetenv(env_cfg[NNN_OPENER], utils[OPENER]);
+	DPRINTF_S(opener);
 
 	/* Set nnn nesting level, idletimeout used as tmp var */
 	idletimeout = xatoi(getenv(env_cfg[NNNLVL]));
@@ -4084,45 +4578,30 @@ int main(int argc, char *argv[])
 	idletimeout = xatoi(getenv(env_cfg[NNN_IDLE_TIMEOUT]));
 	DPRINTF_U(idletimeout);
 
-	home = getenv("HOME");
-	DPRINTF_S(home);
-
-	if (getenv(env_cfg[NNN_TRASH]))
+	if (xgetenv_set(env_cfg[NNN_TRASH]))
 		cfg.trash = 1;
 
-	/* Prefix for other temporary ops */
-	if (home)
-		g_tmpfplen = xstrlcpy(g_tmpfpath, home, HOME_LEN_MAX);
-	else if (xdiraccess("/tmp"))
-		g_tmpfplen = xstrlcpy(g_tmpfpath, "/tmp", HOME_LEN_MAX);
-	else {
-		copier = getenv("TMPDIR");
-		if (copier != NULL)
-			g_tmpfplen = xstrlcpy(g_tmpfpath, copier, HOME_LEN_MAX);
-	}
-
-	if (!cfg.picker && g_tmpfplen) {
-		xstrlcpy(g_cppath, g_tmpfpath, PATH_MAX);
-		xstrlcpy(g_cppath + g_tmpfplen - 1, "/.nnncp", PATH_MAX - g_tmpfplen);
-	}
+	/* Prefix for temporary files */
+	if (!set_tmp_path())
+		return 1;
 
 	/* Get the clipboard copier, if set */
 	copier = getenv(env_cfg[NNN_COPIER]);
 
 	/* Disable auto-select if opted */
-	if (getenv(env_cfg[NNN_NO_AUTOSELECT]))
+	if (xgetenv_set(env_cfg[NNN_NO_AUTOSELECT]))
 		cfg.autoselect = 0;
 
 	/* Disable opening files on right arrow and `l` */
-	if (getenv(env_cfg[NNN_RESTRICT_NAV_OPEN]))
+	if (xgetenv_set(env_cfg[NNN_RESTRICT_NAV_OPEN]))
 		cfg.nonavopen = 1;
 
 	/* Restrict opening of 0-byte files */
-	if (getenv(env_cfg[NNN_RESTRICT_0B]))
+	if (xgetenv_set(env_cfg[NNN_RESTRICT_0B]))
 		cfg.restrict0b = 1;
 
 #ifdef __linux__
-	if (!getenv(env_cfg[NNN_OPS_PROG])) {
+	if (!xgetenv_set(env_cfg[NNN_OPS_PROG])) {
 		cp[5] = cp[4];
 		cp[2] = cp[4] = ' ';
 
@@ -4141,7 +4620,7 @@ int main(int argc, char *argv[])
 	signal(SIGQUIT, SIG_IGN);
 
 	/* Test initial path */
-	if (!xdiraccess(ipath)) {
+	if (!xdiraccess(initpath)) {
 		xerror();
 		return 1;
 	}
@@ -4160,13 +4639,10 @@ int main(int argc, char *argv[])
 	read_history(NULL);
 #endif
 
-#ifdef DBGMODE
-	enabledbg();
-#endif
 	if (!initcurses())
 		return 1;
 
-	browse(ipath);
+	browse(initpath);
 	exitcurses();
 
 #ifndef NORL
@@ -4175,11 +4651,11 @@ int main(int argc, char *argv[])
 
 	if (cfg.pickraw) {
 		if (copybufpos) {
-			opt = selectiontofd(1);
+			opt = selectiontofd(1, NULL);
 			if (opt != (int)(copybufpos))
 				xerror();
 		}
-	} else if (!cfg.picker && g_cppath[0])
+	} else if (!cfg.picker && g_cppath)
 		unlink(g_cppath);
 
 	/* Free the copy buffer */
@@ -4196,8 +4672,5 @@ int main(int argc, char *argv[])
 	close(kq);
 #endif
 
-#ifdef DBGMODE
-	disabledbg();
-#endif
 	return 0;
 }
