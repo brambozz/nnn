@@ -108,25 +108,25 @@ struct key {
 static struct key bindings[] = {
 	/* Back */
 	{ KEY_LEFT,       SEL_BACK },
-	{ 'h',            SEL_BACK },
+	{ 'o',            SEL_BACK },
 	/* Inside or select */
 	{ KEY_ENTER,      SEL_GOIN },
 	{ '\r',           SEL_GOIN },
 	/* Pure navigate inside */
 	{ KEY_RIGHT,      SEL_NAV_IN },
-	{ 'l',            SEL_NAV_IN },
+	{ 'i',            SEL_NAV_IN },
 	/* Next */
-	{ 'j',            SEL_NEXT },
+	{ 'n',            SEL_NEXT },
 	{ KEY_DOWN,       SEL_NEXT },
 	/* Previous */
-	{ 'k',            SEL_PREV },
+	{ 'e',            SEL_PREV },
 	{ KEY_UP,         SEL_PREV },
 	/* Page down */
 	{ KEY_NPAGE,      SEL_PGDN },
-	{ CONTROL('D'),   SEL_PGDN },
+	{ CONTROL('N'),   SEL_PGDN },
 	/* Page up */
 	{ KEY_PPAGE,      SEL_PGUP },
-	{ CONTROL('U'),   SEL_PGUP },
+	{ CONTROL('E'),   SEL_PGUP },
 	/* First entry */
 	{ KEY_HOME,       SEL_HOME },
 	{ 'g',            SEL_HOME },
@@ -134,7 +134,7 @@ static struct key bindings[] = {
 	/* Last entry */
 	{ KEY_END,        SEL_END },
 	{ 'G',            SEL_END },
-	{ CONTROL('E'),   SEL_END },
+	/* { CONTROL('E'),   SEL_END },*/
 	/* HOME */
 	{ '~',            SEL_CDHOME },
 	/* Initial directory */
@@ -210,7 +210,7 @@ static struct key bindings[] = {
 	/* Open in a custom application */
 	{ CONTROL('O'),   SEL_OPENWITH },
 	/* Create a new file */
-	{ 'n',            SEL_NEW },
+	{ 'N',            SEL_NEW },
 	/* Show rename prompt */
 	{ CONTROL('R'),   SEL_RENAME },
 	/* Rename contents of current dir */
@@ -230,10 +230,10 @@ static struct key bindings[] = {
 	/* Run a command */
 	{ CONTROL('P'),   SEL_RUNCMD },
 	/* Open in EDITOR or PAGER */
-	{ 'e',            SEL_RUNEDIT },
+	{ 'E',            SEL_RUNEDIT },
 	{ 'p',            SEL_RUNPAGE },
 	/* Open notes file */
-	{ CONTROL('N'),   SEL_NOTE },
+	{ CONTROL('M'),   SEL_NOTE },
 	/* Lock screen */
 	{ 'L',            SEL_LOCK },
 	/* Quit a context */

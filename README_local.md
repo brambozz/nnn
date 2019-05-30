@@ -27,3 +27,41 @@ sudo make install
 ```
 
 ## Custom keybindings
+
+Since I use Colemak as keyboard layout and have some custom bindings
+in vim, I try to make the two coherent. Below is copied from the
+original readme, but changed with my bindings.
+
+```
+ NAVIGATION
+          ↑ e  Up          PgUp ^E  Scroll up
+          ↓ n  Down        PgDn ^N  Scroll down
+          ← o  Parent dir        ~  Go HOME
+        ↵ → i  Open file/dir     @  Start dir
+    Home g ^A  First entry       -  Last visited dir
+     End G     Last entry        .  Toggle show hidden
+            /  Filter       Ins ^T  Toggle nav-as-you-type
+            b  Pin current dir  ^B  Go to pinned dir
+       Tab ^I  Next context      d  Toggle detail view
+         , ^/  Leader key  N LeadN  Enter context N
+          Esc  Exit prompt      ^L  Redraw/clear prompt
+           ^G  Quit and cd       q  Quit context
+         Q ^Q  Quit              ?  Help, config
+ FILES
+           ^O  Open with...      N  Create new/link
+            D  File details     ^R  Rename entry
+     ⎵ ^K / Y  Select entry/all  r  Batch rename
+         K ^Y  Toggle selection  y  List selection
+            P  Copy selection    X  Delete selection
+            V  Move selection   ^X  Delete entry
+            f  Create archive  m M  Brief/full mediainfo
+           ^F  Extract archive   F  List archive
+            E  Edit in EDITOR    p  Open in PAGER
+ ORDER TOGGLES
+           ^J  Disk usage        S  Apparent du
+           ^W  Random  s  Size   t  Time modified
+ MISC
+         ! ^]  Spawn SHELL       C  Execute entry
+         R ^V  Run/pick script   L  Lock terminal
+           ^P  Prompt  ^N  Note  =  Launcher
+```
