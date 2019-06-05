@@ -204,15 +204,15 @@ static struct key bindings[] = {
 	{ ' ',            SEL_COPY },
 	/* Toggle copy multiple file paths */
 	{ 'K',            SEL_COPYMUL },
-	{ CONTROL('Y'),   SEL_COPYMUL },
+	{ 'v',   SEL_COPYMUL },
 	/* Select all files in current dir */
-	{ 'Y',            SEL_COPYALL },
+	{ CONTROL('V'),            SEL_COPYALL },
 	/* Show list of copied files */
-	{ 'y',            SEL_COPYLIST },
+	{ 'l',            SEL_COPYLIST },
 	/* Copy from copy buffer */
-	{ 'P',            SEL_CP },
+	{ 'y',            SEL_CP },
 	/* Move from copy buffer */
-	{ 'V',            SEL_MV },
+	{ 'p',            SEL_MV },
 	/* Delete from copy buffer */
 	{ 'X',            SEL_RMMUL },
 	/* Delete currently selected */
@@ -238,7 +238,7 @@ static struct key bindings[] = {
 	{ CONTROL(']'),   SEL_SHELL },
 	/* Run a plugin */
 	{ 'R',            SEL_PLUGIN },
-	{ CONTROL('V'),   SEL_PLUGIN },
+	/*{ CONTROL('V'),   SEL_PLUGIN },*/
 	/* Launcher */
 	{ '=',            SEL_LAUNCH },
 	/* Run a command */

@@ -22,8 +22,16 @@ For updating `nnn`, I do the following:
 The finally, build `nnn`:
 
 ```
+make clean
 make 
 sudo make install
+```
+
+## Dependencies
+
+There are a number of dependencies for my use:
+```
+vidir
 ```
 
 ## Custom keybindings
@@ -31,6 +39,7 @@ sudo make install
 Since I use Colemak as keyboard layout and have some custom bindings
 in vim, I try to make the two coherent. Below is copied from the
 original readme, but changed with my bindings.
+At some point, I want to make a cheatsheet for this.
 
 ```
  NAVIGATION
@@ -50,18 +59,18 @@ original readme, but changed with my bindings.
  FILES
            ^O  Open with...      N  Create new/link
             D  File details     ^R  Rename entry
-     ⎵ ^K / Y  Select entry/all  r  Batch rename
-         K ^Y  Toggle selection  y  List selection
-            P  Copy selection    X  Delete selection
-            V  Move selection   ^X  Delete entry
+    ⎵ ^K / ^V  Select entry/all  r  Batch rename
+          K v  Toggle selection  l  List selection
+            y  Copy selection    X  Delete selection
+            p  Move selection   ^X  Delete entry
             f  Create archive  m M  Brief/full mediainfo
            ^F  Extract archive   F  List archive
-            E  Edit in EDITOR    p  Open in PAGER
+            E  Edit in EDITOR    P  Open in PAGER
  ORDER TOGGLES
            ^J  Disk usage        S  Apparent du
            ^W  Random  s  Size   t  Time modified
  MISC
          ! ^]  Spawn SHELL       C  Execute entry
-         R ^V  Run/pick script   L  Lock terminal
+         R  Run/pick script   L  Lock terminal
            ^P  Prompt  ^N  Note  =  Launcher
 ```
