@@ -206,7 +206,7 @@ static struct key bindings[] = {
 	{ 'K',            SEL_COPYMUL },
 	{ 'v',   SEL_COPYMUL },
 	/* Select all files in current dir */
-	{ CONTROL('V'),            SEL_COPYALL },
+	{ 'V',            SEL_COPYALL },
 	/* Show list of copied files */
 	{ 'l',            SEL_COPYLIST },
 	/* Copy from copy buffer */
@@ -214,15 +214,15 @@ static struct key bindings[] = {
 	/* Move from copy buffer */
 	{ 'p',            SEL_MV },
 	/* Delete from copy buffer */
-	{ 'X',            SEL_RMMUL },
+	{ 'x',            SEL_RMMUL },
 	/* Delete currently selected */
-	{ CONTROL('X'),   SEL_RM },
+	{ 'X',   SEL_RM },
 	/* Open in a custom application */
-	{ CONTROL('O'),   SEL_OPENWITH },
+	{ 'O',   SEL_OPENWITH },
 	/* Create a new file */
 	{ 'N',            SEL_NEW },
 	/* Show rename prompt */
-	{ CONTROL('R'),   SEL_RENAME },
+	{ 'R',   SEL_RENAME },
 	/* Rename contents of current dir */
 	{ 'r',            SEL_RENAMEALL },
 	/* Connect to server over SSHFS */
@@ -237,7 +237,7 @@ static struct key bindings[] = {
 	{ '!',            SEL_SHELL },
 	{ CONTROL(']'),   SEL_SHELL },
 	/* Run a plugin */
-	{ 'R',            SEL_PLUGIN },
+	{ CONTROL('R'),            SEL_PLUGIN },
 	/*{ CONTROL('V'),   SEL_PLUGIN },*/
 	/* Launcher */
 	{ '=',            SEL_LAUNCH },
@@ -245,7 +245,7 @@ static struct key bindings[] = {
 	{ CONTROL('P'),   SEL_RUNCMD },
 	/* Open in EDITOR or PAGER */
 	{ 'E',            SEL_RUNEDIT },
-	{ 'p',            SEL_RUNPAGE },
+	{ 'P',            SEL_RUNPAGE },
 	/* Open notes file */
 	{ CONTROL('M'),   SEL_NOTE },
 	/* Lock screen */
