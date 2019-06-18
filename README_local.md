@@ -56,7 +56,7 @@ small letters as much as possible and otherwise capital letters.
        Tab ^I  Next context      d  Toggle detail view
          , ^/  Leader key  N LeadN  Enter context N
           Esc  Exit prompt      ^L  Redraw/clear prompt
-           ^Q  Quit and cd       q  Quit context
+            Z  Quit and cd       q  Quit context
             Q  Quit              ?  Help, config
  FILES
             O  Open with...      N  Create new/link
