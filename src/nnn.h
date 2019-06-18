@@ -253,9 +253,8 @@ static struct key bindings[] = {
 	/* Quit a context */
 	{ 'q',            SEL_QUITCTX },
 	/* Change dir on quit */
-	{ CONTROL('G'),   SEL_QUITCD },
+	{ CONTROL('Q'),   SEL_QUITCD },
 	/* Quit */
 	{ 'Q',            SEL_QUIT },
-	{ CONTROL('Q'),   SEL_QUIT },
 	{ KEY_MOUSE,      SEL_CLICK },
 };
