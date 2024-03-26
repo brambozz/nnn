@@ -159,7 +159,6 @@ static struct key bindings[] = {
 	/* First entry */
 	{ KEY_HOME,       SEL_HOME },
 	{ 'g',            SEL_HOME },
-	{ CONTROL('A'),   SEL_HOME },
 	/* Last entry */
 	{ KEY_END,        SEL_END },
 	{ 'G',            SEL_END },
@@ -203,14 +202,13 @@ static struct key bindings[] = {
 	/* Filter */
 	{ '/',            SEL_FLTR },
 	/* Toggle filter mode */
-	{ CONTROL('M'),   SEL_MFLTR },
+	{ CONTROL('F'),   SEL_MFLTR },
 	/* Toggle hide .dot files */
 	{ '.',            SEL_HIDDEN },
 	/* Detailed listing */
 	{ 'd',            SEL_DETAIL },
 	/* File details */
 	{ 'f',            SEL_STATS },
-	{ CONTROL('F'),   SEL_STATS },
 	/* Toggle executable status */
 	{ '*',            SEL_CHMODX },
 	/* Create archive */
@@ -230,7 +228,7 @@ static struct key bindings[] = {
 	/* Invert selection in current dir */
 	{ 'A',            SEL_SELINV },
 	/* List, edit selection */
-	{ CONTROL('E'),            SEL_SELEDIT },
+	{ CONTROL('A'),            SEL_SELEDIT },
 	/* Copy from selection buffer */
 	{ 'y',            SEL_CP },
 	/* Move from selection buffer */
@@ -244,7 +242,7 @@ static struct key bindings[] = {
 	/* Open in a custom application */
 	{ CONTROL('O'),   SEL_OPENWITH },
 	/* Create a new file */
-	{ 'n',            SEL_NEW },
+	{ 'N',            SEL_NEW },
 	/* Show rename prompt */
 	{ 'R',   SEL_RENAME },
 	/* Rename contents of current dir */
