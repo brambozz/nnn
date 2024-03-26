@@ -133,23 +133,25 @@ struct key {
 static struct key bindings[] = {
 	/* Back */
 	{ KEY_LEFT,       SEL_BACK },
-	{ 'h',            SEL_BACK },
+	{ 'o',            SEL_BACK },
 	/* Inside or select */
 	{ KEY_ENTER,      SEL_OPEN },
 	{ '\r',           SEL_OPEN },
 	/* Pure navigate inside */
 	{ KEY_RIGHT,      SEL_NAV_IN },
-	{ 'l',            SEL_NAV_IN },
+	{ 'i',            SEL_NAV_IN },
 	/* Next */
-	{ 'j',            SEL_NEXT },
+	{ 'n',            SEL_NEXT },
 	{ KEY_DOWN,       SEL_NEXT },
 	/* Previous */
-	{ 'k',            SEL_PREV },
+	{ 'e',            SEL_PREV },
 	{ KEY_UP,         SEL_PREV },
 	/* Page down */
 	{ KEY_NPAGE,      SEL_PGDN },
+	{ CONTROL('N'),      SEL_PGDN },
 	/* Page up */
 	{ KEY_PPAGE,      SEL_PGUP },
+	{ CONTROL('E'),      SEL_PGDN },
 	/* Ctrl+D */
 	{ CONTROL('D'),   SEL_CTRL_D },
 	/* Ctrl+U */
@@ -161,7 +163,6 @@ static struct key bindings[] = {
 	/* Last entry */
 	{ KEY_END,        SEL_END },
 	{ 'G',            SEL_END },
-	{ CONTROL('E'),   SEL_END },
 	/* Go to first file */
 	{ '\'',           SEL_FIRST },
 	/* Jump to an entry number/offset */
@@ -202,7 +203,7 @@ static struct key bindings[] = {
 	/* Filter */
 	{ '/',            SEL_FLTR },
 	/* Toggle filter mode */
-	{ CONTROL('N'),   SEL_MFLTR },
+	{ CONTROL('M'),   SEL_MFLTR },
 	/* Toggle hide .dot files */
 	{ '.',            SEL_HIDDEN },
 	/* Detailed listing */
@@ -229,27 +230,23 @@ static struct key bindings[] = {
 	/* Invert selection in current dir */
 	{ 'A',            SEL_SELINV },
 	/* List, edit selection */
-	{ 'E',            SEL_SELEDIT },
+	{ CONTROL('E'),            SEL_SELEDIT },
 	/* Copy from selection buffer */
-	{ 'p',            SEL_CP },
-	{ CONTROL('P'),   SEL_CP },
+	{ 'y',            SEL_CP },
 	/* Move from selection buffer */
-	{ 'v',            SEL_MV },
-	{ CONTROL('V'),   SEL_MV },
+	{ 'p',            SEL_MV },
 	/* Copy/move from selection buffer and rename */
 	{ 'w',            SEL_CPMVAS },
-	{ CONTROL('W'),   SEL_CPMVAS },
 	/* Delete from selection buffer */
 	{ 'x',            SEL_TRASH },
 	{ CONTROL('X'),   SEL_TRASH },
 	{ 'X',            SEL_RM_ONLY },
 	/* Open in a custom application */
-	{ 'o',            SEL_OPENWITH },
 	{ CONTROL('O'),   SEL_OPENWITH },
 	/* Create a new file */
 	{ 'n',            SEL_NEW },
 	/* Show rename prompt */
-	{ CONTROL('R'),   SEL_RENAME },
+	{ 'R',   SEL_RENAME },
 	/* Rename contents of current dir */
 	{ 'r',            SEL_RENAMEMUL },
 	/* Disconnect a SSHFS mount point */
@@ -259,7 +256,7 @@ static struct key bindings[] = {
 	/* Toggle auto-advance on file open */
 	{ CONTROL('J'),   SEL_AUTONEXT },
 	/* Edit in EDITOR */
-	{ 'e',            SEL_EDIT },
+	{ 'E',            SEL_EDIT },
 	/* Run a plugin */
 	{ ';',            SEL_PLUGIN },
 	/* Show total size of listed selection */
@@ -282,7 +279,7 @@ static struct key bindings[] = {
 	/* Quit a context */
 	{ 'q',            SEL_QUITCTX },
 	/* Change dir on quit */
-	{ CONTROL('G'),   SEL_QUITCD },
+	{ 'Z',   SEL_QUITCD },
 	/* Quit */
 	{ CONTROL('Q'),   SEL_QUIT },
 	/* Quit with an error code */
